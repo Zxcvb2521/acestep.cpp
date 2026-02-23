@@ -1151,17 +1151,19 @@ static void usage(const char * prog) {
         "\n"
         "Required:\n"
         "  --request <json>       Request JSON (read, enriched, overwritten)\n"
-        "  --model <gguf>         Model GGUF file (from convert.py)\n"
+        "  --model <gguf>         Model GGUF file\n"
         "\n"
-        "Infra:\n"
-        "  --max-seq <N>          KV cache size (default: 8192)\n"
+        "Batch:\n"
         "  --batch <N>            Batch N sequences (default: 1)\n"
-        "  --no-fsm               Disable FSM constrained decoding\n"
+        "\n"
+        "Output naming: input.json -> input0.json, input1.json, ... (last digit = batch index)\n"
         "\n"
         "Debug:\n"
+        "  --max-seq <N>          KV cache size (default: 8192)\n"
+        "  --no-fsm               Disable FSM constrained decoding\n"
         "  --dump-logits <path>   Dump prefill logits (binary f32)\n"
         "  --dump-tokens <path>   Dump prompt token IDs (CSV)\n"
-        "\n", prog);
+        , prog);
 }
 
 int main(int argc, char ** argv) {

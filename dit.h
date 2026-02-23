@@ -149,6 +149,10 @@ static struct ggml_tensor * dit_load_proj_in_w(
         exit(1);
     }
     struct ggml_tensor * src = ggml_get_tensor(gf.meta, name.c_str());
+    if (!src) {
+        fprintf(stderr, "[GGUF] FATAL: meta tensor '%s' not found\n", name.c_str());
+        exit(1);
+    }
     size_t offset = gguf_get_tensor_offset(gf.gguf, idx);
     const void * raw = gf.mapping + gf.data_offset + offset;
 
@@ -196,6 +200,10 @@ static struct ggml_tensor * dit_load_proj_out_w(
         exit(1);
     }
     struct ggml_tensor * src = ggml_get_tensor(gf.meta, name.c_str());
+    if (!src) {
+        fprintf(stderr, "[GGUF] FATAL: meta tensor '%s' not found\n", name.c_str());
+        exit(1);
+    }
     size_t offset = gguf_get_tensor_offset(gf.gguf, idx);
     const void * raw = gf.mapping + gf.data_offset + offset;
 

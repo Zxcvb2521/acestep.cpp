@@ -192,6 +192,7 @@ All fields with defaults. Only `caption` is required.
     "lm_temperature":     0.85,
     "lm_cfg_scale":       2.0,
     "lm_top_p":           0.9,
+    "lm_top_k":           0,
     "lm_negative_prompt": "NO USER INPUT",
     "audio_codes":        "",
     "inference_steps":    8,
@@ -211,21 +212,20 @@ Base/SFT preset: `inference_steps=32, guidance_scale=7.0, shift=1.0, thinking=fa
 ## ace-qwen3 reference
 
 ```
-Usage: ace-qwen3 [options]
+Usage: ace-qwen3 --request <json> --model <gguf> [options]
 
 Required:
-  --request <json>       Input request JSON (never modified)
-  --model <gguf>         Model GGUF file (from convert.py)
+  --request <json>       Request JSON (read, enriched, overwritten)
+  --model <gguf>         Model GGUF file
 
-Generation:
-  --batch <N>            Generate N sequences (default: 1)
-                         Output: request0.json .. requestN-1.json
+Batch:
+  --batch <N>            Batch N sequences (default: 1)
 
-Infra:
-  --max-seq <N>          KV cache size (default: 8192)
-  --no-fsm               Disable FSM constrained decoding
+Output naming: input.json -> input0.json, input1.json, ... (last digit = batch index)
 
 Debug:
+  --max-seq <N>          KV cache size (default: 8192)
+  --no-fsm               Disable FSM constrained decoding
   --dump-logits <path>   Dump prefill logits (binary f32)
   --dump-tokens <path>   Dump prompt token IDs (CSV)
 ```
@@ -239,32 +239,29 @@ are both batched with independent seeds (seed+0 .. seed+N-1).
 ## dit-vae reference
 
 ```
-Usage: dit-vae [options]
+Usage: dit-vae --request <json...> --text-encoder <gguf> --dit <gguf> --vae <gguf> [options]
 
 Required:
-  --request <json> ...    One or more request JSONs (output from ace-qwen3)
+  --request <json...>     One or more request JSONs (from ace-qwen3 --request)
   --text-encoder <gguf>   Text encoder GGUF file
-  --dit <gguf>            DiT GGUF file (from convert.py)
+  --dit <gguf>            DiT GGUF file
   --vae <gguf>            VAE GGUF file
 
-Generation:
-  --batch <N>             Generate N noise variations per request (default: 1)
-                          Output: request0.wav .. requestN-1.wav
+Batch:
+  --batch <N>             DiT variations per request (default: 1, max 9)
 
-Audio:
-  --noise-file <path>     Load noise from BF16 file (Philox RNG dump)
+Output naming: input.json -> input0.wav, input1.wav, ... (last digit = batch index)
 
 VAE tiling (memory control):
-  --vae-chunk <n>         Latent frames per tile (default: 256)
-  --vae-overlap <n>       Overlap frames per side (default: 64)
+  --vae-chunk <N>         Latent frames per tile (default: 256)
+  --vae-overlap <N>       Overlap frames per side (default: 64)
 
 Debug:
+  --noise-file <path>     Load noise from bf16 file (Philox RNG dump, batch=1 only)
   --dump <dir>            Dump intermediate tensors
 ```
 
-Output naming is automatic: `input.json` with `--batch 2` produces
-`input0.wav`, `input1.wav`. Models are loaded once and reused across
-all requests.
+Models are loaded once and reused across all requests.
 
 ## Architecture
 

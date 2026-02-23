@@ -73,17 +73,16 @@ static void print_usage(const char * prog) {
         "Required:\n"
         "  --request <json...>     One or more request JSONs (from ace-qwen3 --request)\n"
         "  --text-encoder <gguf>   Text encoder GGUF file\n"
-        "  --dit <gguf>            DiT GGUF file (from convert.py)\n"
+        "  --dit <gguf>            DiT GGUF file\n"
         "  --vae <gguf>            VAE GGUF file\n\n"
         "Batch:\n"
-        "  --batch <n>             DiT variations per request (default: 1, max 9)\n\n"
-        "Audio:\n"
-        "  --noise-file <path>     Load noise from bf16 file (Philox RNG dump, batch=1 only)\n\n"
-        "VAE tiling (memory control):\n"
-        "  --vae-chunk <n>         Latent frames per tile (default: 256)\n"
-        "  --vae-overlap <n>       Overlap frames per side (default: 64)\n\n"
+        "  --batch <N>             DiT variations per request (default: 1, max 9)\n\n"
         "Output naming: input.json -> input0.wav, input1.wav, ... (last digit = batch index)\n\n"
+        "VAE tiling (memory control):\n"
+        "  --vae-chunk <N>         Latent frames per tile (default: 256)\n"
+        "  --vae-overlap <N>       Overlap frames per side (default: 64)\n\n"
         "Debug:\n"
+        "  --noise-file <path>     Load noise from bf16 file (Philox RNG dump, batch=1 only)\n"
         "  --dump <dir>            Dump intermediate tensors\n", prog);
 }
 
