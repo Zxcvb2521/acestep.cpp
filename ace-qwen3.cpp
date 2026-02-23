@@ -1150,7 +1150,7 @@ static void usage(const char * prog) {
         "Usage: %s --request <json> --model <gguf> [options]\n"
         "\n"
         "Required:\n"
-        "  --request <json>       Request JSON (read, enriched, overwritten)\n"
+        "  --request <json>       Input request JSON\n"
         "  --model <gguf>         Model GGUF file\n"
         "\n"
         "Batch:\n"

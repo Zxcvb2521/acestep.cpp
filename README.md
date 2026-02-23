@@ -215,7 +215,7 @@ Base/SFT preset: `inference_steps=32, guidance_scale=7.0, shift=1.0, thinking=fa
 Usage: ace-qwen3 --request <json> --model <gguf> [options]
 
 Required:
-  --request <json>       Request JSON (read, enriched, overwritten)
+  --request <json>       Input request JSON
   --model <gguf>         Model GGUF file
 
 Batch:
