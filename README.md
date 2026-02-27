@@ -292,15 +292,40 @@ python3 debug-detok-cossim.py     # FSQ detokenizer: step-by-step cossim C++ vs 
 python3 debug-dit-cossim.py       # DiT: per-layer cossim GGML vs Python (turbo/SFT, BF16/quantized)
 ```
 
-## Known issues
+## Patched GGML fork
 
-Uses a patched GGML fork (submodule). Three fixes for long-sequence audio:
+Uses a patched GGML fork (submodule) with ops added for the Oobleck VAE decoder.
 
-- **CUDA**: im2col.cu gridDim.y overflow when T > 65535 patches (Metal unaffected, grid dims up to 2^32).
-- **CUDA**: conv_transpose_1d.cu O(T_in) brute-force loop too slow for VAE upsampling.
-- **Metal**: conv_transpose_1d same O(T_in) brute-force loop, replaced with bounded range (matching CUDA).
+The VAE reconstructs audio from latent space through 5 upsampling blocks (total 1920x),
+each running a transposed convolution followed by 3 WaveNet-style residual units with
+dilated convolutions and Snake activations. A single tile builds a graph of 36 snake
+activations, 5 transposed convolutions, and 32 regular convolutions. At the final blocks,
+sequence lengths reach 491520 timesteps, which stresses GGML ops designed for short NLP
+sequences. The DiT (diffusion transformer) uses only standard GGML ops and needs no patches.
 
-TODO: verify if these are still needed on latest GGML and submit upstream PRs.
+Patches on top of upstream GGML, oldest first:
+
+| Commit | Scope | Description |
+|--------|-------|-------------|
+| `e2ccaf1` | CUDA | `conv_transpose_1d`: replace O(T_in) brute-force loop with bounded range |
+| `af2a075` | CUDA | `im2col`: grid-stride loop on OW to fix gridDim.y overflow when T > 65535 |
+| `c9c673d` | Metal | `conv_transpose_1d`: same bounded loop fix as CUDA |
+| `10cd9cc` | CPU, CUDA, Metal | New `GGML_OP_COL2IM_1D`: scatter-add for GEMM-based conv_transpose_1d decomposition |
+| `f23ec42` | CPU, CUDA, Metal | New `GGML_OP_SNAKE`: fused activation y = x + sin^2(a*x) / b (replaces 5 element-wise ops) |
+| `cb9448a` | Metal | Fix snake kernel to use current C wrapper API |
+| `bef7e1b` | Vulkan | Guard `VK_EXT_layer_settings` for legacy Vulkan SDK (fixes MI50/gfx906) |
+| `b512bc3` | Vulkan | `col2im_1d`: add Vulkan backend |
+| `2dff0b5` | Vulkan | `snake`: add Vulkan backend |
+
+**Why col2im_1d**: upstream `ggml_conv_transpose_1d` uses a naive CUDA kernel (one scalar
+FMA loop per output element, no shared memory, no tensor cores). The VAE spends 40% of its
+FLOP budget on transposed convolutions. We decompose it as `mul_mat + col2im_1d`, routing
+the heavy GEMM through cuBLAS/BLAS/MPS tensor cores. The col2im_1d gather has a 2-iteration
+inner loop and is pure bandwidth.
+
+**Why snake**: the Oobleck VAE uses Snake1d activation (x + sin^2(a*x) / b) 36 times per
+tile. Without a fused op, each activation requires 5 separate GGML kernels (mul, sin, sqr,
+mul, add), causing 5x the memory traffic. The fused kernel reads x once, writes y once.
 
 ## Acknowledgements
 
