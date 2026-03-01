@@ -318,8 +318,8 @@ python3 debug-dit-cossim.py       # DiT: per-layer cossim GGML vs Python (turbo/
 
 ## Patched GGML fork
 
-Uses a patched GGML fork (submodule) with two new ops for the Oobleck VAE decoder.
-All backends: CPU, CUDA, Metal, Vulkan. F32/F16/BF16 data types.
+Uses a patched GGML fork (submodule) with two new ops and a CUDA bugfix for the Oobleck
+VAE decoder. All backends: CPU, CUDA, Metal, Vulkan. F32/F16/BF16 data types.
 The DiT uses only standard GGML ops and needs no patches.
 
 The VAE reconstructs audio from latent space through 5 upsampling blocks (total 1920x),
@@ -347,6 +347,13 @@ element, no shared memory, no tensor cores). The VAE spends 40% of its FLOP budg
 transposed convolutions. We decompose each as `mul_mat + col2im_1d`, routing the heavy
 GEMM through cuBLAS/BLAS/MPS tensor cores. The col2im_1d gather has a 2-iteration inner
 loop and is pure bandwidth. BF16 cast nodes around col2im_1d halve the scatter bandwidth.
+
+### Bugfix: `im2col` gridDim.y overflow (CUDA)
+
+Upstream `im2col_kernel` uses OW directly as grid dimension Y, which exceeds the CUDA
+65535 gridDim limit on long sequences. The VAE calls `ggml_conv_1d` (im2col path) 32
+times per tile at output widths up to 491520. Fixed with a grid-stride loop on OW and
+`MIN(OW, MAX_GRIDDIM_Z)` clamping.
 
 ## Acknowledgements
 
