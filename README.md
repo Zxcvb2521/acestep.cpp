@@ -354,11 +354,11 @@ Models are loaded once and reused across all requests.
 
 GGML-native neural audio codec based on the Oobleck VAE encoder and decoder.
 Serves two purposes: validating the precision of the full VAE chain (encode +
-decode roundtrip), and compressing music at 1.6 KB/s with CD quality and no
-perceptible difference from the original.
+decode roundtrip), and compressing music at ~850 B/s with no perceptible
+difference from the original.
 
 ```
-Usage: neural-codec --vae <gguf> --encode|--decode -i <input> [-o <o>] [--q8]
+Usage: neural-codec --vae <gguf> --encode|--decode -i <input> [-o <o>] [--q8|--q4]
 
 Required:
   --vae <path>            VAE GGUF file
@@ -367,9 +367,10 @@ Required:
 
 Output:
   -o <path>               Output file (auto-named if omitted)
-  --q8                    Quantize latent to int8 (~13 kbit/s vs ~51 kbit/s f32)
+  --q8                    Quantize latent to int8 (~13 kbit/s)
+  --q4                    Quantize latent to int4 (~6.8 kbit/s)
 
-Output naming: song.wav -> song.latent (f32) or song.nca8 (Q8)
+Output naming: song.wav -> song.latent (f32) or song.nac8 (Q8) or song.nac4 (Q4)
                song.latent -> song.wav
 
 VAE tiling (memory control):
@@ -378,7 +379,8 @@ VAE tiling (memory control):
 
 Latent formats (decode auto-detects):
   f32:  flat [T, 64] f32, no header. ~51 kbit/s.
-  NCA8: header + per-frame Q8. ~13 kbit/s.
+  NAC8: header + per-frame Q8. ~13 kbit/s.
+  NAC4: header + per-frame Q4. ~6.8 kbit/s.
 ```
 
 The encoder is the symmetric mirror of the decoder: same snake activations,
@@ -386,16 +388,29 @@ same residual units, strided conv1d for downsampling instead of transposed
 conv1d for upsampling. No new GGML ops. Downsample 2x4x4x6x10 = 1920x.
 
 48kHz stereo audio is compressed to 64-dimensional latent frames at 25 Hz.
-With Q8 quantization, each frame is 66 bytes (2B scale + 64B int8), giving
-~13 kbit/s. The quantization error is 39 dB below the VAE reconstruction
-error, meaning the Q8 step is perceptually free.
+Three output formats, decode auto-detects from file content:
+
+| Format | Frame size | Bitrate | 3 min song | vs f32 (cossim) |
+|--------|-----------|---------|------------|-----------------|
+| f32    | 256B      | 51 kbit/s | 1.1 MB   | baseline        |
+| NAC8   | 66B       | 13 kbit/s | 290 KB   | 0.9999          |
+| NAC4   | 34B       | 6.8 kbit/s | 150 KB  | 0.989           |
+
+NAC = Neural Audio Codec. The NAC8 and NAC4 file formats are headerless
+except for a 4-byte magic (`NAC8` or `NAC4`) and a uint32 frame count.
+Q8 quantization error is 39 dB below the VAE reconstruction error (free).
+Q4 quantization error is 16 dB below the VAE reconstruction error (inaudible
+on most material).
 
 ```bash
-# encode
-neural-codec --vae models/vae-BF16.gguf --encode --q8 -i song.wav -o song.nca8
+# encode (Q4: 6.8 kbit/s, ~150 KB for 3 minutes)
+neural-codec --vae models/vae-BF16.gguf --encode --q4 -i song.wav -o song.nac4
 
-# decode
-neural-codec --vae models/vae-BF16.gguf --decode -i song.nca8 -o song_decoded.wav
+# encode (Q8: 13 kbit/s, ~290 KB for 3 minutes)
+neural-codec --vae models/vae-BF16.gguf --encode --q8 -i song.wav -o song.nac8
+
+# decode (auto-detects format)
+neural-codec --vae models/vae-BF16.gguf --decode -i song.nac4 -o song_decoded.wav
 
 # roundtrip validation: compare song.wav and song_decoded.wav with your ears
 ```
