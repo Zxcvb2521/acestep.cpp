@@ -75,3 +75,7 @@ link_ggml_backends(ace-qwen3)
 # quantize: GGUF requantizer (BF16 -> K-quants)
 add_executable(quantize tools/quantize.cpp)
 link_ggml_backends(quantize)
+
+# neural-codec: Oobleck VAE neural audio codec (encode/decode WAV <-> latent)
+add_executable(neural-codec tools/neural-codec.cpp)
+link_ggml_backends(neural-codec)
