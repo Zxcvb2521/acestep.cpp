@@ -30,6 +30,7 @@ struct AceRequest {
     float       lm_top_p;            // 0.9
     int         lm_top_k;            // 0 = disabled (matches Python None)
     std::string lm_negative_prompt;  // ""
+    bool        use_cot_caption;     // true = LLM enriches caption via CoT
 
     // codes (Python-compatible string: "3101,11837,27514,...")
     // empty = text2music (silence context), non-empty = cover mode

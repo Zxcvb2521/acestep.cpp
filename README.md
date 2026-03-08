@@ -257,6 +257,7 @@ the LLM fills them, or a sensible runtime default is applied.
     "lm_top_p":             0.9,
     "lm_top_k":             0,
     "lm_negative_prompt":   "",
+    "use_cot_caption":      true,
     "audio_codes":          "",
     "inference_steps":      8,
     "guidance_scale":       0.0,
@@ -353,6 +354,13 @@ Top-K sampling. `0` disables hard top-K (top_p still applies).
 **`lm_negative_prompt`** (string, default `""`)
 Negative caption for CFG in phase 2. Empty string falls back to a
 caption-less unconditional prompt.
+
+**`use_cot_caption`** (bool, default `true`)
+When `true`, the LLM enriches the user caption via CoT and the enriched
+version is written to the output JSON (and fed to the DiT). When `false`,
+the user caption is preserved verbatim. Only matters when the LLM runs
+phase 1 (i.e. some metadata is missing). When all metadata is provided
+phase 1 is skipped and the caption is never touched regardless of this flag.
 
 ### DiT flow matching (dit-vae)
 
