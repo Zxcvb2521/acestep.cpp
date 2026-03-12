@@ -207,7 +207,8 @@ static float * audio_read_48k(const char * path, int * T_out) {
         return raw;
     }
 
-    int     T_rs      = 0;
+    int T_rs = 0;
+    fprintf(stderr, "[Audio-resample] %d Hz -> 48000 Hz, %d samples...\n", sr, T);
     float * resampled = audio_resample(raw, T, sr, 48000, 2, &T_rs);
     free(raw);
 
@@ -217,7 +218,7 @@ static float * audio_read_48k(const char * path, int * T_out) {
         return NULL;
     }
 
-    fprintf(stderr, "[Audio-resample] %d Hz -> 48000 Hz (%d -> %d samples)\n", sr, T, T_rs);
+    fprintf(stderr, "[Audio-resample] Done: %d -> %d samples\n", T, T_rs);
 
     *T_out = T_rs;
     return resampled;
