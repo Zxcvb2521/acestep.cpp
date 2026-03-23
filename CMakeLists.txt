@@ -4,6 +4,11 @@ project(acestep-ggml LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# pthread: required explicitly on older glibc (< 2.34) where libpthread
+# is not merged into libc. Modern distros link it implicitly but aarch64
+# and older x86_64 toolchains need the explicit dependency.
+find_package(Threads REQUIRED)
+
 # Suppress MSVC fopen/sprintf deprecation warnings
 if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
@@ -50,7 +55,7 @@ macro(link_ggml_backends target)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wshadow -Wconversion
                               -Wno-unused-parameter -Wno-unused-function -Wno-sign-conversion)
     endif()
-    target_link_libraries(${target} PRIVATE ggml)
+    target_link_libraries(${target} PRIVATE ggml Threads::Threads)
     if(TARGET ggml-base)
         target_link_libraries(${target} PRIVATE ggml-base)
     endif()
@@ -131,3 +136,4 @@ else()
                           -Wno-unused-parameter -Wno-unused-function -Wno-sign-conversion)
     target_link_libraries(mp3-codec PRIVATE m)
 endif()
+target_link_libraries(mp3-codec PRIVATE Threads::Threads)
