@@ -110,8 +110,8 @@
 		font-family: monospace;
 		padding: 0.05rem 0.3rem;
 		border-radius: 2px;
-		background: var(--border);
-		color: var(--fg);
+		background: var(--fg);
+		color: var(--bg);
 		flex-shrink: 0;
 	}
 	.timecode {

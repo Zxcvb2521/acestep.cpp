@@ -9,10 +9,13 @@
 	let fileInput: HTMLInputElement;
 
 	let d = $derived(app.health?.default);
+	let maxBatch = $derived(Number(app.health?.cli?.max_batch) || 1);
 
 	function reset() {
 		app.name = '';
 		app.request = { caption: '' };
+		app.pendingRequests = [];
+		app.pendingIndex = 0;
 	}
 
 	function exportJson() {
@@ -38,6 +41,8 @@
 			.text()
 			.then((text) => {
 				app.request = JSON.parse(text) as AceRequest;
+				app.pendingRequests = [];
+				app.pendingIndex = 0;
 			})
 			.catch(() => {
 				toast('Invalid JSON file');
@@ -81,12 +86,36 @@
 		if (guidance_scale != null) out.guidance_scale = guidance_scale;
 		const shift = num(r.shift);
 		if (shift != null) out.shift = shift;
+		const batch_size = num(r.batch_size);
+		if (batch_size != null && batch_size > 1) out.batch_size = batch_size;
 		return out;
 	}
 
-	// Compose: send form to LM, fill ONLY empty fields with the response.
-	// a non-empty field is never overwritten. the user is the sole authority.
-	// audio_codes always comes from LM (we cleared it before sending).
+	// save current form edits back into pendingRequests[pendingIndex]
+	function savePending() {
+		if (app.pendingRequests.length > 0 && app.pendingIndex < app.pendingRequests.length) {
+			app.pendingRequests[app.pendingIndex] = buildRequest();
+		}
+	}
+
+	// load pendingRequests[index] into the form (full replace)
+	function loadPending(index: number) {
+		const r = app.pendingRequests[index];
+		app.request = { ...r };
+		app.pendingIndex = index;
+	}
+
+	// switch to a different pending composition (saves current edits first)
+	function switchPending(delta: number) {
+		const next = app.pendingIndex + delta;
+		if (next < 0 || next >= app.pendingRequests.length) return;
+		savePending();
+		loadPending(next);
+	}
+
+	// Compose: send form to LM, store all enriched results for batch synth.
+	// The LM preserves user-provided fields and fills the rest independently
+	// per batch item. Each result is a complete standalone request.
 	async function compose() {
 		busy = true;
 		try {
@@ -94,18 +123,9 @@
 			req.audio_codes = '';
 			const results = await lmGenerate(req);
 			if (results.length > 0) {
-				const r = results[0];
-				app.request.audio_codes = r.audio_codes || '';
-				if (!app.request.lyrics && r.lyrics) app.request.lyrics = r.lyrics;
-				if (!app.request.vocal_language && r.vocal_language)
-					app.request.vocal_language = r.vocal_language;
-				if (!app.request.keyscale && r.keyscale) app.request.keyscale = r.keyscale;
-				if (!app.request.timesignature && r.timesignature)
-					app.request.timesignature = r.timesignature;
-				if (!app.request.bpm && r.bpm) app.request.bpm = r.bpm;
-				if (!app.request.duration && r.duration) app.request.duration = r.duration;
-				if (!app.request.seed && r.seed) app.request.seed = r.seed;
-				if (!app.request.caption && r.caption) app.request.caption = r.caption;
+				app.pendingRequests = results;
+				app.pendingIndex = 0;
+				app.request = { ...results[0] };
 			}
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
@@ -114,25 +134,37 @@
 		}
 	}
 
-	// POST /synth: read form, send with format, store audio
+	// POST /synth: send pending requests (from Compose) or current form as batch.
+	// Server runs all in a single GPU graph.
 	async function synthesize() {
 		busy = true;
 		try {
-			const req = buildRequest();
-			const result = await synthGenerate(req, app.format);
-			const song = {
-				name: app.name || 'Untitled',
-				format: app.format,
-				created: Date.now(),
-				caption: req.caption,
-				seed: result.seed,
-				duration: result.duration,
-				computeMs: result.computeMs,
-				request: req,
-				audio: result.audio
-			} as Song;
-			song.id = await putSong(song);
-			app.songs.unshift(song);
+			// sync current form edits into pending before sending
+			savePending();
+			// unwrap Svelte proxies (IndexedDB structuredClone and JSON.stringify need plain objects)
+			const reqs: AceRequest[] =
+				app.pendingRequests.length > 0 ? $state.snapshot(app.pendingRequests) : [buildRequest()];
+			const results = await synthGenerate(reqs, app.format);
+			const now = Date.now();
+			const baseName = app.name || 'Untitled';
+			for (let i = results.length - 1; i >= 0; i--) {
+				const r = results[i];
+				const song = {
+					name: baseName,
+					format: app.format,
+					created: now + i,
+					caption: reqs[i < reqs.length ? i : 0].caption,
+					seed: r.seed,
+					duration: r.duration,
+					computeMs: r.computeMs,
+					request: reqs[i < reqs.length ? i : 0],
+					audio: r.audio
+				} as Song;
+				song.id = await putSong(song);
+				app.songs.unshift(song);
+			}
+			app.pendingRequests = [];
+			app.pendingIndex = 0;
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
 		} finally {
@@ -176,7 +208,7 @@
 		></textarea>
 	</label>
 
-	<details>
+	<details open>
 		<summary>Metadata</summary>
 		<div class="details-body">
 			<div class="meta-grid">
@@ -267,20 +299,53 @@
 		</div>
 	</details>
 
+	<div class="selector-row">
+		<label class="selector-label"
+			>Batch <input
+				type="number"
+				class="batch-input"
+				min="1"
+				max={maxBatch}
+				bind:value={app.request.batch_size}
+				placeholder="1"
+			/></label
+		>
+		<div class="pending-nav">
+			<button
+				type="button"
+				class="nav-btn"
+				disabled={app.pendingRequests.length < 2 || app.pendingIndex === 0}
+				onclick={() => switchPending(-1)}>&lt;</button
+			>
+			<span class="nav-label"
+				>{app.pendingRequests.length > 0 ? app.pendingIndex + 1 : 1} / {app.pendingRequests
+					.length || 1}</span
+			>
+			<button
+				type="button"
+				class="nav-btn"
+				disabled={app.pendingRequests.length < 2 ||
+					app.pendingIndex === app.pendingRequests.length - 1}
+				onclick={() => switchPending(1)}>&gt;</button
+			>
+		</div>
+	</div>
+
 	<button type="button" disabled={busy} onclick={compose}>Compose</button>
 
 	<hr />
 
-	<div class="format-pick">
-		<label class="format-label">
+	<div class="selector-row">
+		<span class="selector-label">Format</span>
+		<label class="selector-label">
 			<input type="radio" name="format" value="mp3" bind:group={app.format} /> MP3
 		</label>
-		<label class="format-label">
+		<label class="selector-label">
 			<input type="radio" name="format" value="wav" bind:group={app.format} /> WAV
 		</label>
 	</div>
 
-	<details>
+	<details open>
 		<summary>Advanced Synth</summary>
 		<div class="details-body">
 			<div class="meta-grid">
@@ -373,15 +438,43 @@
 		border: none;
 		border-top: 1px solid var(--border);
 	}
-	.format-pick {
+	.selector-row {
 		display: flex;
-		gap: 1rem;
+		align-items: center;
+		gap: 0.5rem;
 	}
-	.format-label {
+	.selector-label {
 		flex-direction: row;
 		align-items: center;
 		gap: 0.3rem;
 		cursor: pointer;
+		font-size: 0.85rem;
+		color: var(--fg-dim);
+	}
+	.batch-input {
+		width: 3rem;
+		padding: 0.2rem 0.3rem;
+		font-size: 0.8rem;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: var(--bg-input);
+		color: var(--fg);
+		text-align: center;
+	}
+	.pending-nav {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.nav-btn {
+		padding: 0.15rem 0.4rem !important;
+		font-size: 0.75rem !important;
+		min-width: 0 !important;
+	}
+	.nav-label {
+		font-size: 0.75rem;
+		font-family: monospace;
+		color: var(--fg);
 	}
 	button {
 		padding: 0.5rem 1rem;

@@ -251,28 +251,29 @@ static void handle_lm(const httplib::Request & req, httplib::Response & res) {
 
 // POST /synth[?wav=1]
 // input:
-//   application/json body        -> text2music (no source audio)
-//   multipart/form-data          -> cover/repaint/lego (with source audio)
+//   application/json body        -> single request {} or batch [{req0}, {req1}, ...]
+//   multipart/form-data          -> cover/repaint/lego (single request + audio)
 //     part "request": JSON text
 //     part "audio":   WAV or MP3 file
 // output: audio/mpeg (default) or audio/wav (?wav=1)
-//   batch_size == 1: single audio with X-Seed, X-Duration, X-Compute-Ms headers
-//   batch_size >  1: multipart/mixed, each part with per-part headers
+//   batch == 1: single audio with X-Seed, X-Duration, X-Compute-Ms headers
+//   batch >  1: multipart/mixed, each part with per-part headers
+// Batch size = number of JSON objects (clamped to 1..max_batch).
 static void handle_synth(const httplib::Request & req, httplib::Response & res) {
     if (!g_have_synth) {
         json_error(res, 501, "synth pipeline not loaded (requires --embedding --dit --vae)");
         return;
     }
 
-    // parse request: plain JSON or multipart (JSON + audio file)
-    AceRequest ace_req;
-    float *    src_interleaved = nullptr;
-    int        src_len         = 0;
+    // parse request: plain JSON (single or array) or multipart (JSON + audio file)
+    std::vector<AceRequest> ace_reqs;
+    float *                 src_interleaved = nullptr;
+    int                     src_len         = 0;
 
     if (req.is_multipart_form_data()) {
-        // multipart mode: "request" part = JSON, optional "audio" part = WAV/MP3
+        // multipart mode: single request + optional audio (cover/repaint/lego)
+        AceRequest ace_req;
 
-        // extract JSON from "request" part (try file first, then field)
         std::string json_body;
         if (req.form.has_file("request")) {
             json_body = req.form.get_file("request").content;
@@ -287,25 +288,19 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
             return;
         }
 
-        // extract source audio from "audio" part (optional)
         if (req.form.has_file("audio")) {
             auto file = req.form.get_file("audio");
             if (file.content.empty()) {
                 json_error(res, 400, "multipart: empty 'audio' part");
                 return;
             }
-
-            // decode directly from multipart buffer (WAV/MP3 auto-detected)
             int     T_audio = 0;
             float * planar  = audio_read_48k_buf((const uint8_t *) file.content.data(), file.content.size(), &T_audio);
             if (!planar || T_audio <= 0) {
                 json_error(res, 400, "failed to decode audio");
                 return;
             }
-
             fprintf(stderr, "[Server] Source audio: %.2fs @ 48kHz\n", (float) T_audio / 48000.0f);
-
-            // convert planar [L:T][R:T] to interleaved [L0,R0,L1,R1,...] for pipeline
             src_interleaved = (float *) malloc((size_t) T_audio * 2 * sizeof(float));
             for (int t = 0; t < T_audio; t++) {
                 src_interleaved[t * 2 + 0] = planar[t];
@@ -314,35 +309,64 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
             free(planar);
             src_len = T_audio;
         }
+        ace_reqs.push_back(ace_req);
     } else {
-        // plain JSON body (backward compatible, no source audio)
-        if (!request_parse_json(&ace_req, req.body.c_str())) {
-            json_error(res, 400, "invalid JSON");
-            return;
+        // plain JSON body: array of requests or single request
+        const std::string & body = req.body;
+        size_t              pos  = body.find_first_not_of(" \t\r\n");
+        if (pos != std::string::npos && body[pos] == '[') {
+            // JSON array: parse each element
+            // minimal array split: find each {} object in the array.
+            // use request_parse_json for each, which handles nested braces.
+            int depth     = 0;
+            int obj_start = -1;
+            for (size_t i = pos; i < body.size(); i++) {
+                char c = body[i];
+                if (c == '{') {
+                    if (depth == 0) {
+                        obj_start = (int) i;
+                    }
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                    if (depth == 0 && obj_start >= 0) {
+                        std::string obj_str = body.substr(obj_start, i - obj_start + 1);
+                        AceRequest  r;
+                        request_init(&r);
+                        if (!request_parse_json(&r, obj_str.c_str())) {
+                            json_error(res, 400, "invalid JSON in array element");
+                            return;
+                        }
+                        ace_reqs.push_back(r);
+                        obj_start = -1;
+                    }
+                }
+            }
+        } else {
+            // single JSON object (backward compatible)
+            AceRequest r;
+            request_init(&r);
+            if (!request_parse_json(&r, body.c_str())) {
+                json_error(res, 400, "invalid JSON");
+                return;
+            }
+            ace_reqs.push_back(r);
         }
     }
 
-    // clamp batch_size to [1, max_batch]
-    int batch_n = ace_req.batch_size;
-    if (batch_n < 1) {
-        batch_n = 1;
+    if (ace_reqs.empty()) {
+        json_error(res, 400, "empty request");
+        return;
     }
+
+    // clamp batch to max_batch
+    int batch_n = (int) ace_reqs.size();
     if (batch_n > g_max_batch) {
         batch_n = g_max_batch;
-    }
-
-    // resolve seed so we can report it in response headers.
-    // pipeline skips resolution when seed >= 0 (same logic as pipeline-synth.cpp).
-    if (ace_req.seed < 0) {
-        std::random_device rd;
-        ace_req.seed = (int64_t) rd() << 32 | rd();
-        if (ace_req.seed < 0) {
-            ace_req.seed = -ace_req.seed;
-        }
+        ace_reqs.resize(batch_n);
     }
 
     // synth gets its own mutex when LM is also configured (disjoint GPU mem).
-    // when synth is the only pipeline, just use mtx_lm (no contention).
     // try_lock: 503 instantly if GPU busy.
     std::mutex &                 mtx = g_have_lm ? mtx_synth : mtx_lm;
     std::unique_lock<std::mutex> lock(mtx, std::try_to_lock);
@@ -355,11 +379,11 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
         wake_synth();
     }
 
-    // generate N tracks (single graph with N samples)
+    // generate N tracks (single GPU graph with N samples, each with its own context)
     std::vector<AceAudio> audio(batch_n);
     auto                  t0 = std::chrono::steady_clock::now();
-    int rc = ace_synth_generate(g_ctx_synth, &ace_req, src_interleaved, src_len, batch_n, audio.data(), server_cancel,
-                                (void *) &req.is_connection_closed);
+    int rc           = ace_synth_generate(g_ctx_synth, ace_reqs.data(), src_interleaved, src_len, batch_n, audio.data(),
+                                          server_cancel, (void *) &req.is_connection_closed);
     g_synth_last_use = std::chrono::steady_clock::now();
     lock.unlock();
     free(src_interleaved);
@@ -375,8 +399,8 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
     float compute_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
     // output format: ?wav=1 for WAV, default MP3
-    bool output_wav = req.has_param("wav") && req.get_param_value("wav") == "1";
-    const char * mime = output_wav ? "audio/wav" : "audio/mpeg";
+    bool         output_wav = req.has_param("wav") && req.get_param_value("wav") == "1";
+    const char * mime       = output_wav ? "audio/wav" : "audio/mpeg";
 
     // encode each track (peak normalize + encode)
     std::vector<std::string> encoded(batch_n);
@@ -421,7 +445,7 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
         }
 
         char val[64];
-        snprintf(val, sizeof(val), "%lld", (long long) ace_req.seed);
+        snprintf(val, sizeof(val), "%lld", (long long) ace_reqs[0].seed);
         res.set_header("X-Seed", val);
         snprintf(val, sizeof(val), "%.2f", durations[0]);
         res.set_header("X-Duration", val);
@@ -443,7 +467,7 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
         body += "\r\n";
 
         char hdr[256];
-        snprintf(hdr, sizeof(hdr), "X-Seed: %lld\r\n", (long long) (ace_req.seed + b));
+        snprintf(hdr, sizeof(hdr), "X-Seed: %lld\r\n", (long long) ace_reqs[b].seed);
         body += hdr;
         snprintf(hdr, sizeof(hdr), "X-Duration: %.2f\r\n", durations[b]);
         body += hdr;

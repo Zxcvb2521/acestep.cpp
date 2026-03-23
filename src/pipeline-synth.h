@@ -37,15 +37,18 @@ void ace_synth_default_params(AceSynthParams * p);
 // Load all models. NULL on failure.
 AceSynth * ace_synth_load(const AceSynthParams * params);
 
-// Generate audio from request.
+// Generate audio from N requests in a single GPU batch.
+// reqs[batch_n]: each request can have different audio_codes (and seed).
+//   All requests must share the same caption, lyrics, metadata, and duration.
+//   The first request (reqs[0]) is used for text encoding and conditioning.
 // src_audio: interleaved stereo 48kHz (for cover/lego mode), NULL for text2music.
 // src_len: samples per channel.
-// batch_n: number of variations (1..9).
+// batch_n: number of requests (1..9).
 // out[batch_n] allocated by caller, filled with audio buffers.
 // cancel/cancel_data: abort callback, polled between DiT steps. NULL = never cancel.
 // Returns 0 on success, -1 on error or cancellation.
 int ace_synth_generate(AceSynth *         ctx,
-                       const AceRequest * req,
+                       const AceRequest * reqs,
                        const float *      src_audio,
                        int                src_len,
                        int                batch_n,

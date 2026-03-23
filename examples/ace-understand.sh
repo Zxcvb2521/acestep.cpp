@@ -1,13 +1,13 @@
 #!/bin/bash
-# Roundtrip: audio -> understand -> SFT DiT -> 2 MP3 variations
+# Roundtrip: audio -> understand -> SFT DiT -> MP3
 #
-# Usage: ./understand-roundtrip.sh input.wav (or input.mp3)
+# Usage: ./ace-understand.sh input.wav (or input.mp3)
 #
 # understand:
 # input -> ace-understand.json (audio codes + metadata)
 #
 # ace-synth:
-# ace-understand.json -> output0.mp3 .. output1.mp3
+# ace-understand.json -> ace-understand0.mp3
 
 set -eu
 
@@ -26,8 +26,7 @@ input="$1"
     -o ace-understand.json
 
 sed -i \
-    -e 's/"audio_cover_strength": *[0-9.]*/"audio_cover_strength": 0.04/' \
-    -e 's/"batch_size": *[0-9]*/"batch_size": 2/' \
+    's/"audio_cover_strength": *[0-9.]*/"audio_cover_strength": 0.04/' \
     ace-understand.json
 
 ../build/ace-synth \

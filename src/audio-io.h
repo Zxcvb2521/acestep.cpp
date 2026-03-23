@@ -307,29 +307,42 @@ static std::string audio_encode_wav(const float * audio, int T_audio, int sr) {
     char * p = &out[0];
 
     // RIFF header
-    memcpy(p, "RIFF", 4); p += 4;
-    memcpy(p, &file_size, 4); p += 4;
-    memcpy(p, "WAVE", 4); p += 4;
-    memcpy(p, "fmt ", 4); p += 4;
+    memcpy(p, "RIFF", 4);
+    p += 4;
+    memcpy(p, &file_size, 4);
+    p += 4;
+    memcpy(p, "WAVE", 4);
+    p += 4;
+    memcpy(p, "fmt ", 4);
+    p += 4;
     int   fmt_size = 16;
     short fmt_tag  = 1;
     short nc       = (short) n_channels;
     short ba       = (short) block_align;
     short bp       = (short) bits;
-    memcpy(p, &fmt_size, 4); p += 4;
-    memcpy(p, &fmt_tag, 2); p += 2;
-    memcpy(p, &nc, 2); p += 2;
-    memcpy(p, &sr, 4); p += 4;
-    memcpy(p, &byte_rate, 4); p += 4;
-    memcpy(p, &ba, 2); p += 2;
-    memcpy(p, &bp, 2); p += 2;
-    memcpy(p, "data", 4); p += 4;
-    memcpy(p, &data_size, 4); p += 4;
+    memcpy(p, &fmt_size, 4);
+    p += 4;
+    memcpy(p, &fmt_tag, 2);
+    p += 2;
+    memcpy(p, &nc, 2);
+    p += 2;
+    memcpy(p, &sr, 4);
+    p += 4;
+    memcpy(p, &byte_rate, 4);
+    p += 4;
+    memcpy(p, &ba, 2);
+    p += 2;
+    memcpy(p, &bp, 2);
+    p += 2;
+    memcpy(p, "data", 4);
+    p += 4;
+    memcpy(p, &data_size, 4);
+    p += 4;
 
     // interleave planar float to PCM int16
-    const float * L = audio;
-    const float * R = audio + T_audio;
-    short * pcm = (short *) p;
+    const float * L   = audio;
+    const float * R   = audio + T_audio;
+    short *       pcm = (short *) p;
     for (int t = 0; t < T_audio; t++) {
         pcm[t * 2 + 0] = (short) (L[t] * 32767.0f);
         pcm[t * 2 + 1] = (short) (R[t] * 32767.0f);

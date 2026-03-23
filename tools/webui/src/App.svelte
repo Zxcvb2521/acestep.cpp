@@ -39,14 +39,23 @@
 	function onVolume(e: Event) {
 		app.volume = Number((e.target as HTMLInputElement).value);
 	}
+
+	// sync dark/light class on <html> so CSS variables switch
+	$effect(() => {
+		document.documentElement.classList.toggle('dark', app.dark);
+		document.documentElement.classList.toggle('light', !app.dark);
+	});
 </script>
 
 <div class="ace-app">
 	<header>
 		<span class="header-label">acestep.cpp</span>
 		<div class="spacer"></div>
-		<span class="header-label {statusClass(app.health?.status.lm)}">LM</span>
-		<span class="header-label {statusClass(app.health?.status.synth)}">Synth</span>
+		<label class="dark-toggle">
+			<input type="checkbox" bind:checked={app.dark} /> Dark
+		</label>
+		<span class="status-badge {statusClass(app.health?.status.lm)}">LM</span>
+		<span class="status-badge {statusClass(app.health?.status.synth)}">Synth</span>
 		<div class="volume">
 			<Volume2 size={14} />
 			<input type="range" min="0" max="1" step="0.01" value={app.volume} oninput={onVolume} />
@@ -72,7 +81,7 @@
 		--bg-card: #1e2a45;
 		--bg-btn: #0f3460;
 		--bg-btn-hover: #1a4a8a;
-		--fg: #e0e0e0;
+		--fg: #fff;
 		--fg-dim: #8a8aa0;
 		--border: #2a2a4a;
 		--focus: #2ed573;
@@ -85,26 +94,24 @@
 		--waveform-play: #2ed573;
 		color-scheme: dark;
 	}
-	@media (prefers-color-scheme: light) {
-		:global(:root) {
-			--bg: #f5f5f5;
-			--bg-input: #ffffff;
-			--bg-card: #ffffff;
-			--bg-btn: #e0e0e0;
-			--bg-btn-hover: #d0d0d0;
-			--fg: #1a1a1a;
-			--fg-dim: #666666;
-			--border: #cccccc;
-			--focus: #27ae60;
-			--error: #c0392b;
-			--color-ok: #27ae60;
-			--color-sleep: #e67e22;
-			--color-disabled: #e74c3c;
-			--color-off: #bbb;
-			--waveform-dim: #ccc;
-			--waveform-play: #27ae60;
-			color-scheme: light;
-		}
+	:global(:root.light) {
+		--bg: #f5f5f5;
+		--bg-input: #fff;
+		--bg-card: #fff;
+		--bg-btn: #e0e0e0;
+		--bg-btn-hover: #d0d0d0;
+		--fg: #000;
+		--fg-dim: #666;
+		--border: #ccc;
+		--focus: #27ae60;
+		--error: #c0392b;
+		--color-ok: #27ae60;
+		--color-sleep: #e67e22;
+		--color-disabled: #e74c3c;
+		--color-off: #bbb;
+		--waveform-dim: #ccc;
+		--waveform-play: #27ae60;
+		color-scheme: light;
 	}
 	:global(*, *::before, *::after) {
 		box-sizing: border-box;
@@ -132,30 +139,54 @@
 		border-bottom: 1px solid var(--border);
 	}
 	.header-label {
-		font-size: 0.85rem;
+		font-size: 1.1rem;
 		font-weight: 600;
 		color: var(--fg);
 	}
+	.status-badge {
+		font-size: 0.7rem;
+		font-weight: 600;
+		font-family: monospace;
+		padding: 0.1rem 0.4rem;
+		border-radius: 3px;
+		color: #000;
+	}
 	.st-ok {
-		color: var(--color-ok) !important;
+		background: var(--color-ok);
 	}
 	.st-sleep {
-		color: var(--color-sleep) !important;
+		background: var(--color-sleep);
 	}
 	.st-disabled {
-		color: var(--color-disabled) !important;
+		background: var(--color-disabled);
 	}
 	.st-off {
-		color: var(--color-off) !important;
+		background: var(--color-off);
 	}
 	.spacer {
 		flex: 1;
+	}
+	.dark-toggle {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		font-size: 0.75rem;
+		color: var(--fg-dim);
+		cursor: pointer;
+	}
+	.dark-toggle {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		font-size: 0.75rem;
+		color: var(--fg);
+		cursor: pointer;
 	}
 	.volume {
 		display: flex;
 		align-items: center;
 		gap: 0.3rem;
-		color: var(--fg-dim);
+		color: var(--fg);
 	}
 	.volume input[type='range'] {
 		width: 80px;

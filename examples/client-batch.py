@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 # client-batch.py: test batching via ace-server
 #
-# 2 LM variations x 2 DiT variations = 4 MP3s
-#
-# POST /lm (batch_size=2 in JSON):
-#   simple-batch.json -> 2 enriched requests
-#
-# POST /synth (batch_size=2 per request, multipart/mixed response):
-#   request 0 -> server-batch00.mp3, server-batch01.mp3
-#   request 1 -> server-batch10.mp3, server-batch11.mp3
+# POST /lm (batch_size=2 in JSON) -> 2 enriched requests
+# POST /synth (JSON array of 2 requests) -> 2 MP3s in one GPU batch
 #
 # Start the server first: ./server.sh
 
@@ -33,7 +27,6 @@ def post_json(endpoint, data):
 
 def parse_multipart_mixed(data, content_type):
     """Parse multipart/mixed response into list of (headers_dict, body_bytes)."""
-    # extract boundary from content-type header
     boundary = None
     for part in content_type.split(";"):
         part = part.strip()
@@ -44,7 +37,6 @@ def parse_multipart_mixed(data, content_type):
         raise ValueError("no boundary in content-type: " + content_type)
 
     delimiter = b"--" + boundary
-    terminator = delimiter + b"--"
     parts = []
 
     for chunk in data.split(delimiter):
@@ -54,7 +46,6 @@ def parse_multipart_mixed(data, content_type):
         if not chunk:
             continue
 
-        # split headers from body at first blank line
         sep = chunk.find(b"\r\n\r\n")
         if sep < 0:
             continue
@@ -73,7 +64,7 @@ def parse_multipart_mixed(data, content_type):
     return parts
 
 
-# Phase 1: LM generates 2 variations
+# Phase 1: LM generates N variations
 try:
     with open("simple-batch.json") as f:
         request_json = json.load(f)
@@ -82,48 +73,42 @@ except FileNotFoundError:
     sys.exit(1)
 
 try:
-    print("POST /lm (batch_size=%d)..." % request_json.get("batch_size", 1))
+    batch_size = request_json.get("batch_size", 1)
+    print("POST /lm (batch_size=%d)..." % batch_size)
     lm_data, _ = post_json("/lm", request_json)
 except urllib.error.URLError as e:
     print("ERROR: cannot connect to %s (%s)" % (URL, e.reason))
     print("Start the server first: ./server.sh")
     sys.exit(1)
 lm_results = json.loads(lm_data)
-print("  -> %d variations" % len(lm_results))
+print("  -> %d enriched requests" % len(lm_results))
 
-# Phase 2: synth with batch_size=2 for each LM output
-total = 0
-for i, lm_req in enumerate(lm_results):
-    lm_req["batch_size"] = 2
-    print("POST /synth (LM variation %d, batch_size=2, seed=%d)..." % (i, lm_req["seed"]))
+# Phase 2: synth all in one GPU batch (send JSON array)
+print("POST /synth (batch=%d, JSON array)..." % len(lm_results))
+body = json.dumps(lm_results).encode()
+req = urllib.request.Request(
+    URL + "/synth",
+    data=body,
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(req) as resp:
+    resp_data = resp.read()
+    content_type = resp.headers.get("Content-Type", "")
 
-    body = json.dumps(lm_req).encode()
-    req = urllib.request.Request(
-        URL + "/synth",
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req) as resp:
-        resp_data = resp.read()
-        content_type = resp.headers.get("Content-Type", "")
-
-    if "multipart/mixed" in content_type:
-        # batch response: parse multipart/mixed
-        parts = parse_multipart_mixed(resp_data, content_type)
-        for j, (headers, mp3_data) in enumerate(parts):
-            path = "server-batch%d%d.mp3" % (i, j)
-            with open(path, "wb") as f:
-                f.write(mp3_data)
-            seed = headers.get("X-Seed", "?")
-            dur = headers.get("X-Duration", "?")
-            print("  -> %s (%s bytes, seed=%s, dur=%ss)" % (path, len(mp3_data), seed, dur))
-            total += 1
-    else:
-        # single track response (batch_size was clamped to 1)
-        path = "server-batch%d0.mp3" % i
+if "multipart/mixed" in content_type:
+    parts = parse_multipart_mixed(resp_data, content_type)
+    for i, (headers, mp3_data) in enumerate(parts):
+        path = "server-batch%d.mp3" % i
         with open(path, "wb") as f:
-            f.write(resp_data)
-        print("  -> %s (%d bytes)" % (path, len(resp_data)))
-        total += 1
+            f.write(mp3_data)
+        seed = headers.get("X-Seed", "?")
+        dur = headers.get("X-Duration", "?")
+        print("  -> %s (%s bytes, seed=%s, dur=%ss)" % (path, len(mp3_data), seed, dur))
+else:
+    # single track (batch was clamped to 1)
+    path = "server-batch0.mp3"
+    with open(path, "wb") as f:
+        f.write(resp_data)
+    print("  -> %s (%d bytes)" % (path, len(resp_data)))
 
-print("Done: %d MP3s" % total)
+print("Done: %d MP3(s)" % len(lm_results))

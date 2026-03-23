@@ -788,7 +788,7 @@ int ace_lm_generate(AceLm *            ctx,
             out[b].audio_codes = batch_codes[b];
         }
         out[b].seed       = seed + b;
-        out[b].batch_size = 1;  // batch consumed: each output is one enriched request
+        out[b].batch_size = 1;  // each output is a standalone enriched request
     }
 
     fprintf(stderr, "[Ace-LM] Load %.0f | Total %.0fms | seed=%lld\n", ctx->load_ms, t_total.ms(), seed);

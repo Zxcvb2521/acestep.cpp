@@ -123,7 +123,7 @@ With a LoRA adapter (PEFT directory or ComfyUI single file):
 Generate multiple songs at once with `batch_size` in the JSON:
 
 ```bash
-# 2 song variations (different lyrics, codes, metadata)
+# 2 different songs from one prompt (different lyrics, codes, metadata)
 cat > /tmp/request.json << 'EOF'
 {
     "caption": "Upbeat pop rock anthem with driving guitars and catchy hooks",
@@ -132,12 +132,12 @@ cat > /tmp/request.json << 'EOF'
 }
 EOF
 
-# LM: request.json (batch_size=2) -> request0.json, request1.json (each batch_size=1)
+# LM: request.json (batch_size=2) -> request0.json, request1.json
 ./build/ace-lm \
     --request /tmp/request.json \
     --lm models/acestep-5Hz-lm-4B-Q8_0.gguf
 
-# DiT+VAE: -> request00.mp3, request10.mp3 (one per request, batch_size=1)
+# DiT+VAE: both requests in one GPU batch -> simple-batch00.mp3, simple-batch11.mp3
 ./build/ace-synth \
     --request /tmp/request0.json /tmp/request1.json \
     --embedding models/Qwen3-Embedding-0.6B-Q8_0.gguf \
@@ -145,12 +145,11 @@ EOF
     --vae models/vae-BF16.gguf
 ```
 
-The LM decides song structure (lyrics, melody, rhythm via audio codes), so
-LM batch variations produce genuinely different songs. DiT batch variations
-only differ by initial noise, producing subtle variations of the same piece
-(slightly different timbres, minor rhythmic shifts). The LM consumes
-`batch_size` and resets it to 1 in its output JSONs. To get DiT noise
-variations, set `batch_size` directly in an already-enriched JSON.
+`batch_size` controls how many songs the LM generates. User-provided
+fields are preserved in all outputs. Empty fields are filled independently
+per batch item from different seeds, producing genuinely different songs.
+ace-synth takes all request files as CLI arguments and runs them in a
+single GPU batch.
 
 Transform an existing song with `--src-audio` (no LLM needed):
 
@@ -176,13 +175,13 @@ Ready-made examples in `examples/`:
 ```bash
 cd examples
 ./simple.sh                    # caption only, LLM fills everything
-./simple-batch.sh              # 2x2: 2 LM variations x 2 DiT variations = 4 MP3s
+./simple-batch.sh              # 2 songs from one prompt (batch_size=2)
 ./partial.sh                   # caption + lyrics + duration
 ./full.sh                      # all metadata provided
 ./dit-only.sh                  # skip LLM, DiT from noise
 ./server.sh                    # start HTTP server (all pipelines, batch=2)
 ./client.sh                    # test server (single song)
-./client-batch.py              # test server (2x2 = 4 MP3s)
+./client-batch.py              # test server batch (2 songs)
 ./client-understand.sh <audio> # test /understand + /synth roundtrip
 ```
 
@@ -202,7 +201,7 @@ timesignature, duration, vocal_language) via CoT. Phase 2 reinjects the CoT
 and generates audio codes using the "Generate tokens" prompt. CFG is forced
 to 1.0 in phase 1 (free sampling); `lm_cfg_scale` only applies in phase 2.
 With `batch_size > 1`, each element runs its own phase 1 from a different seed,
-producing N completely different songs. See `examples/simple.json`.
+producing N completely different songs. See `examples/simple-batch.json`.
 
 **Caption + lyrics (+ optional metadata)**: single LLM pass. The "Generate
 tokens" prompt is used directly. Missing metadata is filled via CoT, the
@@ -213,7 +212,7 @@ generation. See `examples/partial.json`.
 **Everything provided** (caption, lyrics, bpm, duration, keyscale,
 timesignature): the LLM skips CoT and generates audio codes directly.
 With `batch_size > 1`, all elements share the same prompt (single prefill,
-KV cache copied). See `examples/full.json`.
+KV cache copied), producing N different audio code sets. See `examples/full.json`.
 
 **Instrumental** (`lyrics="[Instrumental]"`): treated as "lyrics provided",
 so the single-pass "Generate tokens" path is used. No lyrics generation.
@@ -364,11 +363,9 @@ BCP-47 language code for lyrics, e.g. `"en"`, `"fr"`, `"ja"`. Three states:
 ### Generation control
 
 **`batch_size`** (int, default `1`)
-Number of variations to generate. Matches Python `GenerationConfig.batch_size`.
-Each variation uses a different seed (seed+0, seed+1, ..., seed+N-1).
-ace-lm generates N enriched requests and resets `batch_size` to 1 in each
-output (the batch is consumed). ace-synth generates N audio renders from
-different initial noise. Maximum 9 for ace-synth.
+Number of songs to generate. ace-lm produces N enriched requests, each with
+its own lyrics, audio codes, metadata, and seed (seed+0 ... seed+N-1).
+ace-synth takes N request files and runs them in a single GPU batch.
 
 **`seed`** (int64, default `-1` = random)
 RNG seed. Resolved once at startup to a random value if -1. Batch elements
@@ -497,7 +494,8 @@ LoRA:
   --lora-scale <float>    LoRA scaling factor (default: 1.0)
 
 Output:
-  Default: MP3 at 128 kbps. input.json -> input0.mp3, input1.mp3, ...
+  Default: MP3 at 128 kbps. input.json -> input0.mp3
+  Multiple requests are batched in one GPU pass.
   --mp3-bitrate <kbps>    MP3 bitrate (default: 128)
   --wav                   Output WAV instead of MP3
 
@@ -600,15 +598,14 @@ returns a JSON array of enriched requests (`Content-Type: application/json`).
 `batch_size` in the input controls the array length (clamped to `1..max_batch`).
 Requires `--lm`.
 
-**POST /synth** runs the synth pipeline and returns MP3 audio.
-Two input modes: plain `application/json` body for text2music, or
-`multipart/form-data` with a `request` part (JSON) and an `audio` part
-(WAV or MP3) for cover/repaint/lego. `batch_size` in the JSON controls
-GPU batching (clamped to `1..max_batch`).
+**POST /synth** runs the synth pipeline and returns audio (MP3 or WAV via `?wav=1`).
+Three input modes: a JSON array `[{req0}, {req1}]` for batch generation,
+a single `application/json` object for one track, or `multipart/form-data`
+with a `request` part (JSON) and an `audio` part (WAV or MP3) for
+cover/repaint/lego. Array length is clamped to `1..max_batch`.
 Response format depends on batch size:
-`batch_size=1`: `Content-Type: audio/mpeg` with headers `X-Seed`, `X-Duration`, `X-Compute-Ms`.
-`batch_size>1`: `Content-Type: multipart/mixed`, each part is `audio/mpeg` with per-part
-`X-Seed` (base_seed+b), `X-Duration`, `X-Compute-Ms` headers.
+batch=1: single audio body with headers `X-Seed`, `X-Duration`, `X-Compute-Ms`.
+batch>1: `Content-Type: multipart/mixed`, each part with per-part headers.
 Requires `--embedding --dit --vae`.
 
 **POST /understand** runs the reverse pipeline (audio -> metadata + lyrics + codes)
@@ -618,12 +615,20 @@ and returns an AceRequest JSON. Two input modes: `multipart/form-data` with an
 Audio input mode requires `--lm` plus `--dit --vae`. Codes-only mode
 requires just `--lm`.
 
-**GET /health** returns server status:
-`{"status":"ok","max_batch":N,"sleep":N,"pipelines":["lm","synth","understand"]}`
+**GET /health** returns `{"status":"ok"}`. Zero allocation, zero logic.
+Use for load balancer health checks.
 
-Pipelines show `"name:sleeping"` when unloaded by `--sleep`.
-The `pipelines` array lists the active endpoints based on which models
-were loaded. Endpoints not in the list return 501.
+**GET /props** returns server configuration, pipeline status, and the
+default AceRequest (source of truth for webui placeholders):
+```json
+{
+  "status": { "lm": "ok", "synth": "sleeping" },
+  "cli": { "max_batch": 2, "mp3_bitrate": 128, ... },
+  "default": { "caption": "", "duration": 0, ... }
+}
+```
+Pipeline status: `"ok"` = loaded, `"sleeping"` = unloaded by `--sleep`
+(will wake on next request), `"disabled"` = not configured.
 
 Error responses are JSON: `{"error":"message"}` with 400, 500, 501, or
 503 status. 503 includes a `Retry-After` header.

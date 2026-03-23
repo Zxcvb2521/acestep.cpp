@@ -232,14 +232,14 @@ AceSynth * ace_synth_load(const AceSynthParams * params) {
 }
 
 int ace_synth_generate(AceSynth *         ctx,
-                       const AceRequest * req,
+                       const AceRequest * reqs,
                        const float *      src_audio,
                        int                src_len,
                        int                batch_n,
                        AceAudio *         out,
                        bool (*cancel)(void *),
                        void * cancel_data) {
-    if (!ctx || !req || !out || batch_n < 1 || batch_n > 9) {
+    if (!ctx || !reqs || !out || batch_n < 1 || batch_n > 9) {
         return -1;
     }
 
@@ -281,8 +281,9 @@ int ace_synth_generate(AceSynth *         ctx,
         have_cover = true;
     }
 
-    // Work on a mutable copy
-    AceRequest rr = *req;
+    // Shared params from first request (caption, lyrics, metadata, DiT settings).
+    // Per-batch: audio_codes come from reqs[b], seed is always reqs[0].seed + b.
+    AceRequest rr = reqs[0];
 
     if (rr.caption.empty() && rr.lego.empty()) {
         fprintf(stderr, "[Request] ERROR: caption is empty, skipping\n");
@@ -369,13 +370,25 @@ int ace_synth_generate(AceSynth *         ctx,
         }
     }
 
-    // Audio codes from request JSON (passthrough mode only, NOT cover)
-    std::vector<int> codes_vec = parse_codes_string(rr.audio_codes);
-    if (!codes_vec.empty()) {
-        fprintf(stderr, "[Pipeline] %zu audio codes (%.1fs @ 5Hz)\n", codes_vec.size(),
-                (float) codes_vec.size() / 5.0f);
+    // Audio codes: scan all requests to determine T from the longest code set.
+    // Per-batch codes are decoded in the context building loop below.
+    // Shorter code sets are padded with silence, longer ones are never truncated.
+    int  max_codes_len = 0;
+    bool have_codes    = false;
+    for (int b = 0; b < batch_n; b++) {
+        std::vector<int> cb = parse_codes_string(reqs[b].audio_codes);
+        if ((int) cb.size() > max_codes_len) {
+            max_codes_len = (int) cb.size();
+        }
+        if (!cb.empty()) {
+            have_codes = true;
+        }
     }
-    if (!codes_vec.empty() && !ctx->have_detok) {
+    if (have_codes) {
+        fprintf(stderr, "[Pipeline] max audio codes across batch: %d (%.1fs @ 5Hz)\n", max_codes_len,
+                (float) max_codes_len / 5.0f);
+    }
+    if (have_codes && !ctx->have_detok) {
         fprintf(stderr, "[Detokenizer] FATAL: failed to load\n");
         return -1;
     }
@@ -394,8 +407,8 @@ int ace_synth_generate(AceSynth *         ctx,
         T        = T_cover;
         // duration in metas must match actual source length, not JSON default
         duration = (float) T_cover / (float) FRAMES_PER_SECOND;
-    } else if (!codes_vec.empty()) {
-        T = (int) codes_vec.size() * 5;
+    } else if (have_codes) {
+        T = max_codes_len * 5;
     } else {
         T = (int) (duration * FRAMES_PER_SECOND);
     }
@@ -451,7 +464,7 @@ int ace_synth_generate(AceSynth *         ctx,
     //   repaint    = "Repaint the mask area..."
     //   lego       = "Generate the {TRACK_NAME} track based on the audio context:"
     // Auto-switches to cover when audio_codes are present
-    bool        is_cover = have_cover || !codes_vec.empty();
+    bool        is_cover = have_cover || have_codes;
     std::string instruction_str;
     if (is_lego) {
         // Lego mode: force audio_cover_strength=1.0 so all DiT steps see the source audio
@@ -525,34 +538,13 @@ int ace_synth_generate(AceSynth *         ctx,
 
     debug_dump_2d(&dbg, "enc_hidden", enc_hidden.data(), enc_S, 2048);
 
-    // Decode audio codes if provided (passthrough mode only, NOT cover)
-    int                decoded_T = 0;
-    std::vector<float> decoded_latents;
-    if (!have_cover && !codes_vec.empty()) {
-        timer.reset();
-        int T_5Hz        = (int) codes_vec.size();
-        int T_25Hz_codes = T_5Hz * 5;
-        decoded_latents.resize(T_25Hz_codes * Oc);
-
-        int ret = detok_ggml_decode(&ctx->detok, codes_vec.data(), T_5Hz, decoded_latents.data());
-        if (ret < 0) {
-            fprintf(stderr, "[Detokenizer] FATAL: decode failed\n");
-            return -1;
-        }
-        fprintf(stderr, "[Context] Detokenizer: %.1f ms\n", timer.ms());
-
-        decoded_T = T_25Hz_codes < T ? T_25Hz_codes : T;
-        debug_dump_2d(&dbg, "detok_output", decoded_latents.data(), T_25Hz_codes, Oc);
-    }
-
-    // Build context: [T, ctx_ch] = src_latents[64] + chunk_mask[64]
-    // Cover/Lego: src = cover_latents, mask = 1.0 everywhere
-    // Repaint:   src = silence in region / cover outside, mask = 1.0 in region / 0.0 outside
-    // Passthrough: detokenized FSQ codes + silence padding, mask = 1.0
-    // Text2music: silence only, mask = 1.0
+    // Build context: [batch_n, T, ctx_ch] = src_latents[64] + chunk_mask[64]
+    // Cover/Lego/Repaint: shared context replicated (cover_latents from src_audio).
+    // Passthrough: per-batch detokenized FSQ codes + silence padding, mask = 1.0.
+    // Text2music: silence only, mask = 1.0.
     int repaint_t0 = 0, repaint_t1 = 0;
     if (is_repaint) {
-        repaint_t0 = (int) (rs * 48000.0f / 1920.0f);  // sec -> latent frames (25 Hz)
+        repaint_t0 = (int) (rs * 48000.0f / 1920.0f);
         repaint_t1 = (int) (re * 48000.0f / 1920.0f);
         if (repaint_t0 < 0) {
             repaint_t0 = 0;
@@ -565,11 +557,14 @@ int ace_synth_generate(AceSynth *         ctx,
         }
         fprintf(stderr, "[Repaint] Latent frames: [%d, %d) / %d\n", repaint_t0, repaint_t1, T);
     }
-    std::vector<float> context_single(T * ctx_ch);
+
+    std::vector<float> context(batch_n * T * ctx_ch);
+
     if (have_cover) {
+        // Cover/Lego/Repaint: build once, replicate (cover_latents are shared)
+        std::vector<float> context_single(T * ctx_ch);
         for (int t = 0; t < T; t++) {
             bool          in_region = is_repaint && t >= repaint_t0 && t < repaint_t1;
-            // src: silence in repaint region, cover_latents outside
             const float * src       = in_region ?
                                           ctx->silence_full.data() + t * Oc :
                                           ((t < T_cover) ? cover_latents.data() + t * Oc : ctx->silence_full.data() + t * Oc);
@@ -581,23 +576,49 @@ int ace_synth_generate(AceSynth *         ctx,
                 context_single[t * ctx_ch + Oc + c] = mask_val;
             }
         }
+        for (int b = 0; b < batch_n; b++) {
+            memcpy(context.data() + b * T * ctx_ch, context_single.data(), T * ctx_ch * sizeof(float));
+        }
     } else {
-        for (int t = 0; t < T; t++) {
-            const float * src =
-                (t < decoded_T) ? decoded_latents.data() + t * Oc : ctx->silence_full.data() + (t - decoded_T) * Oc;
-            for (int c = 0; c < Oc; c++) {
-                context_single[t * ctx_ch + c] = src[c];
+        // Text2music / Passthrough: per-batch context with per-batch audio_codes
+        for (int b = 0; b < batch_n; b++) {
+            float * ctx_dst = context.data() + b * T * ctx_ch;
+
+            // decode this batch item's audio codes (if any)
+            int                decoded_T = 0;
+            std::vector<float> decoded_latents;
+            std::vector<int>   codes_b = parse_codes_string(reqs[b].audio_codes);
+            if (!codes_b.empty()) {
+                timer.reset();
+                int T_5Hz        = (int) codes_b.size();
+                int T_25Hz_codes = T_5Hz * 5;
+                decoded_latents.resize(T_25Hz_codes * Oc);
+
+                int ret = detok_ggml_decode(&ctx->detok, codes_b.data(), T_5Hz, decoded_latents.data());
+                if (ret < 0) {
+                    fprintf(stderr, "[Detokenizer Batch%d] FATAL: decode failed\n", b);
+                    return -1;
+                }
+                fprintf(stderr, "[Context Batch%d] Detokenizer: %.1f ms, %d codes\n", b, timer.ms(), T_5Hz);
+
+                decoded_T = T_25Hz_codes < T ? T_25Hz_codes : T;
+                if (b == 0) {
+                    debug_dump_2d(&dbg, "detok_output", decoded_latents.data(), T_25Hz_codes, Oc);
+                }
             }
-            for (int c = 0; c < Oc; c++) {
-                context_single[t * ctx_ch + Oc + c] = 1.0f;
+
+            // fill context: decoded latents then silence, mask = 1.0
+            for (int t = 0; t < T; t++) {
+                const float * src =
+                    (t < decoded_T) ? decoded_latents.data() + t * Oc : ctx->silence_full.data() + (t - decoded_T) * Oc;
+                for (int c = 0; c < Oc; c++) {
+                    ctx_dst[t * ctx_ch + c] = src[c];
+                }
+                for (int c = 0; c < Oc; c++) {
+                    ctx_dst[t * ctx_ch + Oc + c] = 1.0f;
+                }
             }
         }
-    }
-
-    // Replicate context for N batch samples (all identical)
-    std::vector<float> context(batch_n * T * ctx_ch);
-    for (int b = 0; b < batch_n; b++) {
-        memcpy(context.data() + b * T * ctx_ch, context_single.data(), T * ctx_ch * sizeof(float));
     }
 
     // Cover mode: build silence context for audio_cover_strength switching
@@ -629,7 +650,8 @@ int ace_synth_generate(AceSynth *         ctx,
         }
     }
 
-    // Generate N noise samples (Philox4x32-10, matches torch.randn on CUDA with bf16)
+    // Generate N noise samples (Philox4x32-10, matches torch.randn on CUDA with bf16).
+    // Each batch item gets seed+b (same convention as Python and ace-lm output).
     std::vector<float> noise(batch_n * Oc * T);
     for (int b = 0; b < batch_n; b++) {
         float * dst = noise.data() + b * Oc * T;

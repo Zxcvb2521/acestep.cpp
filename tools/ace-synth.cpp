@@ -164,67 +164,56 @@ int main(int argc, char ** argv) {
         src_len = T_audio;
     }
 
-    // Process each request
-    for (int ri = 0; ri < (int) request_paths.size(); ri++) {
+    // Parse all requests
+    int                      batch_n = (int) request_paths.size();
+    std::vector<AceRequest>  reqs(batch_n);
+    std::vector<std::string> basenames(batch_n);
+    for (int ri = 0; ri < batch_n; ri++) {
         const char * rpath = request_paths[ri];
-
-        // Compute output basename: strip .json suffix
-        std::string basename(rpath);
-        {
-            size_t dot = basename.rfind(".json");
-            if (dot != std::string::npos) {
-                basename = basename.substr(0, dot);
-            }
+        request_init(&reqs[ri]);
+        if (!request_parse(&reqs[ri], rpath)) {
+            fprintf(stderr, "[Request] FATAL: failed to parse %s\n", rpath);
+            ace_synth_free(ctx);
+            free(src_interleaved);
+            return 1;
         }
+        request_dump(&reqs[ri], stderr);
+        if (reqs[ri].caption.empty() && reqs[ri].lego.empty()) {
+            fprintf(stderr, "[Request] FATAL: caption is empty in %s\n", rpath);
+            ace_synth_free(ctx);
+            free(src_interleaved);
+            return 1;
+        }
+        // output basename: strip .json suffix
+        basenames[ri] = rpath;
+        size_t dot    = basenames[ri].rfind(".json");
+        if (dot != std::string::npos) {
+            basenames[ri] = basenames[ri].substr(0, dot);
+        }
+    }
+    fprintf(stderr, "[Pipeline] Batch: %d request(s)\n", batch_n);
 
-        // Parse request JSON
-        AceRequest req;
-        request_init(&req);
-        if (!request_parse(&req, rpath)) {
-            fprintf(stderr, "[Request] ERROR: failed to parse %s, skipping\n", rpath);
+    // Generate all in one GPU batch
+    std::vector<AceAudio> audio(batch_n);
+    if (ace_synth_generate(ctx, reqs.data(), src_interleaved, src_len, batch_n, audio.data()) != 0) {
+        fprintf(stderr, "[Pipeline] ERROR: generation failed\n");
+        free(src_interleaved);
+        ace_synth_free(ctx);
+        return 1;
+    }
+
+    // Write output files
+    for (int b = 0; b < batch_n; b++) {
+        if (!audio[b].samples) {
             continue;
         }
-        request_dump(&req, stderr);
-        if (req.caption.empty() && req.lego.empty()) {
-            fprintf(stderr, "[Request] ERROR: caption is empty in %s, skipping\n", rpath);
-            continue;
+        const char * ext = output_wav ? ".wav" : ".mp3";
+        char         out_path[1024];
+        snprintf(out_path, sizeof(out_path), "%s%d%s", basenames[b].c_str(), b, ext);
+        if (!audio_write(out_path, audio[b].samples, audio[b].n_samples, 48000, mp3_kbps)) {
+            fprintf(stderr, "[Batch%d] FATAL: failed to write %s\n", b, out_path);
         }
-
-        // batch_size from JSON (clamped to 1..9)
-        int batch_n = req.batch_size;
-        if (batch_n < 1) {
-            batch_n = 1;
-        } else if (batch_n > 9) {
-            fprintf(stderr, "[Request] WARNING: batch_size %d clamped to 9\n", batch_n);
-            batch_n = 9;
-        }
-        fprintf(stderr, "[Request %d/%d] %s (batch=%d)\n", ri + 1, (int) request_paths.size(), rpath, batch_n);
-
-        // Generate
-        std::vector<AceAudio> audio(batch_n);
-        if (ace_synth_generate(ctx, &req, src_interleaved, src_len, batch_n, audio.data()) != 0) {
-            fprintf(stderr, "[Request] ERROR: generation failed for %s\n", rpath);
-            continue;
-        }
-
-        // Write output files
-        for (int b = 0; b < batch_n; b++) {
-            if (!audio[b].samples) {
-                continue;
-            }
-
-            // Write output: basename + batch_index + extension
-            const char * ext = output_wav ? ".wav" : ".mp3";
-            char         out_path[1024];
-            snprintf(out_path, sizeof(out_path), "%s%d%s", basename.c_str(), b, ext);
-
-            if (!audio_write(out_path, audio[b].samples, audio[b].n_samples, 48000, mp3_kbps)) {
-                fprintf(stderr, "[VAE Batch%d] FATAL: failed to write %s\n", b, out_path);
-            }
-            ace_audio_free(&audio[b]);
-        }
-
-        fprintf(stderr, "[Request %d/%d] Done\n", ri + 1, (int) request_paths.size());
+        ace_audio_free(&audio[b]);
     }
 
     free(src_interleaved);
