@@ -21,7 +21,6 @@
 	let ch = 0;
 
 	// one-time setup: decode audio blob, compute peaks, create player element.
-	// onMount runs once and never re-triggers on prop/state changes.
 	onMount(() => {
 		cw = canvas.clientWidth || 300;
 		ch = WAVEFORM_HEIGHT;
@@ -49,12 +48,10 @@
 			})
 			.catch(() => {});
 
-		// touch events registered with { passive: false } so preventDefault works.
-		// Chromium makes inline touch handlers passive by default, silently ignoring
-		// preventDefault. addEventListener with explicit passive:false is the fix.
-		canvas.addEventListener('touchstart', onTouchStart, { passive: false });
-		canvas.addEventListener('touchmove', onTouchMove, { passive: false });
-		canvas.addEventListener('touchend', onTouchEnd);
+		// touch events with passive:false so preventDefault stops Chromium from
+		// scrolling (it silently ignores preventDefault on default-passive handlers).
+		canvas.addEventListener('touchstart', preventTouch, { passive: false });
+		canvas.addEventListener('touchmove', preventTouch, { passive: false });
 
 		return () => {
 			if (player) {
@@ -66,18 +63,22 @@
 				url = null;
 			}
 			cancelLoop();
-			canvas.removeEventListener('touchstart', onTouchStart);
-			canvas.removeEventListener('touchmove', onTouchMove);
-			canvas.removeEventListener('touchend', onTouchEnd);
+			canvas.removeEventListener('touchstart', preventTouch);
+			canvas.removeEventListener('touchmove', preventTouch);
 		};
 	});
 
-	// play/pause toggle
+	function preventTouch(e: TouchEvent) {
+		e.preventDefault();
+	}
+
+	// play/pause toggle (driven by SongCard button via bind:playing)
 	$effect(() => {
+		const wantPlay = playing;
 		if (!player) return;
-		if (playing) {
+		if (wantPlay) {
 			player.volume = untrack(() => app.volume);
-			player.play();
+			player.play().catch(() => {});
 			startLoop();
 		} else {
 			player.pause();
@@ -163,51 +164,30 @@
 		draw(x);
 	}
 
-	function onMouseDown(e: MouseEvent) {
+	function onPointerDown(e: PointerEvent) {
 		dragging = true;
+		canvas.setPointerCapture(e.pointerId);
 		seekTo(e.clientX);
-		if (!playing) {
-			player?.play();
-			playing = true;
-		}
-		window.addEventListener('mousemove', onMouseMove);
-		window.addEventListener('mouseup', onMouseUp);
 	}
 
-	function onMouseMove(e: MouseEvent) {
+	function onPointerMove(e: PointerEvent) {
 		if (!dragging) return;
 		seekTo(e.clientX);
 	}
 
-	function onMouseUp() {
-		dragging = false;
-		window.removeEventListener('mousemove', onMouseMove);
-		window.removeEventListener('mouseup', onMouseUp);
-	}
-
-	function onTouchStart(e: TouchEvent) {
-		e.preventDefault();
-		dragging = true;
-		seekTo(e.touches[0].clientX);
-		if (!playing) {
-			player?.play();
-			playing = true;
-		}
-	}
-
-	function onTouchMove(e: TouchEvent) {
-		e.preventDefault();
-		if (!dragging) return;
-		seekTo(e.touches[0].clientX);
-	}
-
-	function onTouchEnd() {
+	function onPointerUp() {
 		dragging = false;
 	}
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<canvas bind:this={canvas} class="waveform" onmousedown={onMouseDown}></canvas>
+<canvas
+	bind:this={canvas}
+	class="waveform"
+	onpointerdown={onPointerDown}
+	onpointermove={onPointerMove}
+	onpointerup={onPointerUp}
+></canvas>
 
 <style>
 	.waveform {
