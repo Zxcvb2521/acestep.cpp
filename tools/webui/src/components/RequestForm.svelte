@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { RotateCcw, Download, FolderOpen } from '@lucide/svelte';
 	import { app, toast } from '../lib/state.svelte.js';
-	import { lmGenerate, synthGenerate } from '../lib/api.js';
+	import { lmGenerate, synthGenerate, understandAudio } from '../lib/api.js';
 	import { putSong } from '../lib/db.js';
 	import type { AceRequest, Song } from '../lib/types.js';
 
@@ -36,18 +36,79 @@
 	}
 
 	function onFileSelected(e: Event) {
-		const file = (e.target as HTMLInputElement).files?.[0];
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
 		if (!file) return;
-		file
-			.text()
-			.then((text) => {
-				app.request = JSON.parse(text) as AceRequest;
-				app.pendingRequests = [];
-				app.pendingIndex = 0;
-			})
-			.catch(() => {
-				toast('Invalid JSON file');
+		// reset so the same file can be re-opened
+		input.value = '';
+
+		const ext = file.name.split('.').pop()?.toLowerCase() || '';
+
+		// JSON: load request into form (existing behavior)
+		if (ext === 'json') {
+			file
+				.text()
+				.then((text) => {
+					app.request = JSON.parse(text) as AceRequest;
+					app.pendingRequests = [];
+					app.pendingIndex = 0;
+				})
+				.catch(() => {
+					toast('Invalid JSON file');
+				});
+			return;
+		}
+
+		// MP3 or WAV: send to /understand, populate form + create song card
+		if (ext === 'mp3' || ext === 'wav') {
+			importAudio(file, ext);
+			return;
+		}
+
+		toast('Unsupported file type: ' + ext);
+	}
+
+	// import audio file via /understand endpoint.
+	// creates a song card with the original audio and fills the form
+	// with the returned metadata so it matches existing generated songs.
+	async function importAudio(file: File, ext: string) {
+		busy = true;
+		try {
+			toast('Understanding audio...');
+			const blob = new Blob([await file.arrayBuffer()], {
+				type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
 			});
+			const result = await understandAudio(blob);
+
+			// populate form with understood metadata
+			app.request = result;
+			app.pendingRequests = [];
+			app.pendingIndex = 0;
+
+			// derive a clean name from the filename (strip extension)
+			const name = file.name.replace(/\.(mp3|wav)$/i, '') || 'Imported';
+			app.name = name;
+
+			// create a song card so the audio is playable immediately
+			const song: Song = {
+				name: name,
+				format: ext,
+				created: Date.now(),
+				caption: result.caption || '',
+				seed: Number(result.seed) || 0,
+				duration: Number(result.duration) || 0,
+				request: { ...result },
+				audio: blob
+			};
+			song.id = await putSong(song);
+			app.songs.unshift(song);
+
+			toast('Imported: ' + name);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : String(e));
+		} finally {
+			busy = false;
+		}
 	}
 
 	// convert string or number to number, return undefined if empty/NaN
@@ -222,7 +283,13 @@
 </script>
 
 <form class="request-form" onsubmit={(e) => e.preventDefault()}>
-	<input type="file" accept=".json" bind:this={fileInput} onchange={onFileSelected} hidden />
+	<input
+		type="file"
+		accept=".json,.mp3,.wav"
+		bind:this={fileInput}
+		onchange={onFileSelected}
+		hidden
+	/>
 	<div class="toolbar">
 		<button type="button" onclick={importJson} title="Open"><FolderOpen size={14} /> Open</button>
 		<button type="button" onclick={exportJson} title="Save"><Download size={14} /> Save</button>

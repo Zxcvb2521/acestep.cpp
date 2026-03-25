@@ -88,6 +88,24 @@ function parseMultipart(buf: Uint8Array, boundary: string, mime: string): Blob[]
 	return results;
 }
 
+// POST /understand: audio file -> AceRequest with metadata + lyrics + codes.
+// sends multipart/form-data with an "audio" part (WAV or MP3).
+export async function understandAudio(blob: Blob): Promise<AceRequest> {
+	const form = new FormData();
+	form.append('audio', blob, 'input.audio');
+	const res = await fetch('understand', {
+		method: 'POST',
+		body: form
+	});
+	if (res.status === 503) throw new Error('Server busy');
+	if (res.status === 501) throw new Error('Understand pipeline not loaded (requires LM + synth)');
+	if (!res.ok) {
+		const err = await res.json().catch(() => ({ error: res.statusText }));
+		throw new Error(err.error || res.statusText);
+	}
+	return res.json();
+}
+
 // GET props: server config, pipeline status, default request (2s timeout)
 export async function props(): Promise<AceHealth> {
 	const res = await fetch('props', {
