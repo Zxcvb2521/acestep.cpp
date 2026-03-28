@@ -463,8 +463,6 @@
 
 	<button type="button" disabled={busy} onclick={compose}>Compose</button>
 
-	<hr />
-
 	<div class="selector-row">
 		<span class="selector-label">Format</span>
 		<label class="selector-label">
@@ -591,10 +589,6 @@
 	}
 	.details-body {
 		padding: 0.25rem 0 0.5rem;
-	}
-	hr {
-		border: none;
-		border-top: 1px solid var(--border);
 	}
 	.selector-row {
 		display: flex;

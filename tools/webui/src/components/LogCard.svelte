@@ -43,7 +43,7 @@
 		{:else}
 			<ChevronRight size={14} />
 		{/if}
-		<span class="card-label">Logs</span>
+		<span class="card-label">Server logs</span>
 	</button>
 	{#if app.logsOpen}
 		<pre class="log-body" bind:this={container}>{lines.join('\n')}</pre>
@@ -54,9 +54,10 @@
 	.card {
 		display: flex;
 		flex-direction: column;
-		border: 1px solid var(--border);
+		border: none;
 		border-radius: 4px;
 		background: var(--bg-card);
+		overflow: hidden;
 	}
 	.card-header {
 		display: flex;
@@ -81,8 +82,6 @@
 		line-height: 1.4;
 		color: var(--fg-dim);
 		background: var(--bg-card);
-		border-top: 1px solid var(--border);
-		border-radius: 0 0 4px 4px;
 		overflow-y: auto;
 		height: 400px;
 		white-space: pre-wrap;

@@ -137,8 +137,8 @@
 		display: flex;
 		align-items: center;
 		gap: 0.6rem;
-		padding: 0.5rem 1rem;
-		border-bottom: 1px solid var(--border);
+		padding: 1rem 1rem;
+		border-bottom: none;
 	}
 	.header-label {
 		font-size: 1.1rem;
@@ -197,13 +197,13 @@
 	main {
 		flex: 1;
 		display: flex;
-		gap: 1px;
-		background: var(--border);
+		gap: 1rem;
+		padding: 0 1rem 1rem;
+		background: var(--bg);
 		overflow: hidden;
 	}
 	.panel {
 		background: var(--bg);
-		padding: 1rem;
 		overflow-y: auto;
 	}
 	.form-panel {

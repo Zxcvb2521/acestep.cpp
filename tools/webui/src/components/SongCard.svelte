@@ -131,7 +131,7 @@
 		flex-direction: column;
 		gap: 0.25rem;
 		padding: 0.5rem;
-		border: 1px solid var(--border);
+		border: none;
 		border-radius: 4px;
 		background: var(--bg-card);
 	}
