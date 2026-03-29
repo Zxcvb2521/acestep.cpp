@@ -8,6 +8,14 @@
 		understandAudio
 	} from '../lib/api.js';
 	import { putSong } from '../lib/db.js';
+	import {
+		TASK_COVER,
+		TASK_REPAINT,
+		TASK_LEGO,
+		TASK_EXTRACT,
+		TASK_COMPLETE,
+		TRACK_NAMES
+	} from '../lib/config.js';
 	import type { AceRequest, Song } from '../lib/types.js';
 
 	let busy = $state(false);
@@ -15,6 +23,19 @@
 
 	let d = $derived(app.health?.default);
 	let maxBatch = $derived(Number(app.health?.cli?.max_batch) || 1);
+	let taskType = $derived(app.request.task_type || '');
+	let needsTrack = $derived(
+		taskType === TASK_LEGO || taskType === TASK_EXTRACT || taskType === TASK_COMPLETE
+	);
+
+	// auto-fill track when switching to a mode that needs one, clear when leaving
+	$effect(() => {
+		if (needsTrack && !app.request.track) {
+			app.request.track = TRACK_NAMES[0];
+		} else if (!needsTrack && app.request.track) {
+			app.request.track = '';
+		}
+	});
 
 	function reset() {
 		app.name = '';
@@ -160,6 +181,8 @@
 		if (lm_batch_size != null && lm_batch_size >= 1) out.lm_batch_size = lm_batch_size;
 		const synth_batch_size = num(r.synth_batch_size);
 		if (synth_batch_size != null && synth_batch_size >= 1) out.synth_batch_size = synth_batch_size;
+		if (r.task_type) out.task_type = String(r.task_type);
+		if (r.track) out.track = String(r.track);
 		return out;
 	}
 
@@ -248,8 +271,16 @@
 			if (sh != null) synthParams.shift = sh;
 			const acs = num(app.request.audio_cover_strength);
 			if (acs != null) synthParams.audio_cover_strength = acs;
-			// repaint: inject range only when a ref song is selected
-			if (app.refSongId != null && app.refRangeEnd > app.refRangeStart && app.refRangeStart >= 0) {
+			// task_type and track from form
+			const t = app.request.task_type || '';
+			if (t) synthParams.task_type = t;
+			if (app.request.track) synthParams.track = app.request.track;
+			// repaint/complete: inject range when task requires it
+			if (
+				(t === TASK_REPAINT || t === TASK_COMPLETE) &&
+				app.refRangeStart >= 0 &&
+				app.refRangeEnd > app.refRangeStart
+			) {
 				synthParams.repainting_start = app.refRangeStart;
 				synthParams.repainting_end = app.refRangeEnd;
 			}
@@ -388,14 +419,6 @@
 	<details>
 		<summary>Advanced LM</summary>
 		<div class="details-body">
-			<label
-				>Negative prompt
-				<textarea
-					rows="4"
-					placeholder="Styles or instruments to steer away from, e.g. saxophone, autotune, screaming, low quality..."
-					bind:value={app.request.lm_negative_prompt}
-				></textarea>
-			</label>
 			<div class="meta-grid">
 				<label
 					>Temperature <input
@@ -426,15 +449,18 @@
 					/></label
 				>
 			</div>
-		</div>
-	</details>
-
-	<details>
-		<summary>Audio codes</summary>
-		<div class="details-body">
-			<label>
+			<label
+				>Negative prompt
 				<textarea
-					rows="8"
+					rows="4"
+					placeholder="Styles or instruments to steer away from, e.g. saxophone, autotune, screaming, low quality..."
+					bind:value={app.request.lm_negative_prompt}
+				></textarea>
+			</label>
+			<label
+				>Audio codes
+				<textarea
+					rows="4"
 					placeholder="Filled by Compose, or paste for dit-only"
 					bind:value={app.request.audio_codes}
 				></textarea>
@@ -477,18 +503,8 @@
 
 	<button type="button" disabled={busy} onclick={compose}>Compose</button>
 
-	<div class="selector-row">
-		<span class="selector-label">Format</span>
-		<label class="selector-label">
-			<input type="radio" name="format" value="mp3" bind:group={app.format} /> MP3
-		</label>
-		<label class="selector-label">
-			<input type="radio" name="format" value="wav" bind:group={app.format} /> WAV
-		</label>
-	</div>
-
 	<details open>
-		<summary>Advanced Synth</summary>
+		<summary>Diffusion parameters</summary>
 		<div class="details-body">
 			<div class="meta-grid">
 				<label
@@ -537,6 +553,39 @@
 				placeholder="1"
 			/></label
 		>
+		<label class="selector-label"
+			>Task <select
+				class="batch-input"
+				value={taskType}
+				onchange={(e) => {
+					app.request.task_type = e.currentTarget.value;
+				}}
+			>
+				<option value="">text2music</option>
+				<option value={TASK_COVER}>cover</option>
+				<option value={TASK_REPAINT}>repaint</option>
+				<option value={TASK_LEGO}>lego</option>
+				<option value={TASK_EXTRACT}>extract</option>
+				<option value={TASK_COMPLETE}>complete</option>
+			</select></label
+		>
+		<label class="selector-label"
+			>Track <select class="batch-input" bind:value={app.request.track}>
+				{#each TRACK_NAMES as name}
+					<option value={name}>{name}</option>
+				{/each}
+			</select></label
+		>
+	</div>
+
+	<div class="selector-row">
+		<span class="selector-label">Format</span>
+		<label class="selector-label">
+			<input type="radio" name="format" value="mp3" bind:group={app.format} /> MP3
+		</label>
+		<label class="selector-label">
+			<input type="radio" name="format" value="wav" bind:group={app.format} /> WAV
+		</label>
 	</div>
 
 	<button type="button" disabled={busy} onclick={synthesize}>Synthesize</button>
@@ -621,13 +670,15 @@
 		color: var(--fg-dim);
 	}
 	.batch-input {
-		width: 3rem;
 		padding: 0.2rem 0.3rem;
 		font-size: 0.8rem;
 		border: 1px solid var(--border);
 		border-radius: 4px;
 		background: var(--bg-input);
 		color: var(--fg);
+	}
+	input.batch-input {
+		width: 3rem;
 		text-align: center;
 	}
 	.pending-nav {

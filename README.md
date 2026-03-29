@@ -156,6 +156,7 @@ Transform an existing song with `--src-audio` (no LLM needed):
 ```bash
 cat > /tmp/cover.json << 'EOF'
 {
+    "task_type": "cover",
     "caption": "Jazz piano cover with brushed drums and walking bass",
     "lyrics": "[Instrumental]",
     "audio_cover_strength": 0.5
@@ -222,7 +223,7 @@ The DiT was trained with this exact string as the no-vocal condition.
 **Passthrough** (`audio_codes` present): LLM is skipped entirely.
 Run `ace-synth` to decode existing codes. See `examples/dit-only.json`.
 
-**Reference audio** (`--src-audio` on CLI): no LLM needed. The source audio
+**Cover** (`"task_type": "cover"` + `--src-audio`): no LLM needed. The source audio
 (WAV or MP3, any sample rate) is resampled to 48kHz, VAE-encoded to latent
 space and used as DiT context instead of silence.
 `audio_cover_strength` in the JSON controls how many DiT steps see the source
@@ -230,19 +231,18 @@ space and used as DiT context instead of silence.
 steers the style while the source provides structure, melody, and rhythm.
 Duration is determined by the source audio.
 
-**Repaint** (`--src-audio` + `repainting_start`/`repainting_end` in JSON):
+**Repaint** (`"task_type": "repaint"` + `--src-audio`):
 regenerates a time region of the source audio while preserving the rest.
-Requires the **SFT model** (the turbo model is less performant for this task).
 The DiT receives a binary mask: 1.0 inside the region (generate), 0.0 outside
 (keep original). Source latents outside the region provide context; silence
-fills the repaint zone. Both fields default to -1
-(inactive). Set one or both to activate: -1 on start means 0s, -1 on end means
-source duration. `audio_cover_strength` is ignored in repaint mode (the mask
-handles everything).
+fills the repaint zone. `repainting_start` and `repainting_end` define the
+region in seconds. -1 on start means 0s, -1 on end means source duration.
+`audio_cover_strength` is ignored in repaint mode (the mask handles everything).
 
 ```bash
 cat > /tmp/repaint.json << 'EOF'
 {
+    "task_type": "repaint",
     "caption": "Smooth jazz guitar solo with reverb",
     "lyrics": "[Instrumental]",
     "repainting_start": 10.0,
@@ -261,9 +261,8 @@ EOF
     --vae models/vae-BF16.gguf
 ```
 
-**Lego** (`"lego"` in JSON + `--src-audio`):
+**Lego** (`"task_type": "lego"` + `--src-audio`):
 generates a new instrument track layered over an existing backing track.
-Only the **base model** (`acestep-v15-base`) supports lego mode.
 See `examples/lego.json` and `examples/lego.sh`.
 
 ```bash
@@ -271,7 +270,8 @@ cat > /tmp/lego.json << 'EOF'
 {
     "caption": "electric guitar riff, funk guitar, house music, instrumental",
     "lyrics": "[Instrumental]",
-    "lego": "guitar",
+    "task_type": "lego",
+    "track": "guitar",
     "inference_steps": 50,
     "guidance_scale": 1.0,
     "shift": 1.0
@@ -287,8 +287,9 @@ EOF
     --wav
 ```
 
-Available track names: `vocals`, `backing_vocals`, `drums`, `bass`, `guitar`,
-`keyboard`, `percussion`, `strings`, `synth`, `fx`, `brass`, `woodwinds`.
+Available track names for lego, extract, and complete: `vocals`, `backing_vocals`,
+`drums`, `bass`, `guitar`, `keyboard`, `percussion`, `strings`, `synth`, `fx`,
+`brass`, `woodwinds`.
 
 ## Request JSON reference
 
@@ -320,7 +321,8 @@ the LLM fills them, or a sensible runtime default is applied.
     "audio_cover_strength": 0.5,
     "repainting_start":     -1,
     "repainting_end":       -1,
-    "lego":                 ""
+    "task_type":            "",
+    "track":                ""
 }
 ```
 
@@ -373,7 +375,7 @@ Number of LM variations. Has no effect on ace-synth.
 
 **`synth_batch_size`** (int, default `1`)
 Number of DiT variations per request. Works in all modes: text2music,
-cover, repaint, lego. Combined with `lm_batch_size`, you get
+cover, repaint, lego, extract, complete. Combined with `lm_batch_size`, you get
 `lm_batch_size * synth_batch_size` total outputs.
 
 ### Batching
@@ -392,28 +394,43 @@ entire LLM pass is skipped and ace-synth decodes these codes directly
 (passthrough mode).
 
 **`audio_cover_strength`** (float, default `0.5`)
-Only used with `--src-audio`. Fraction of DiT steps that see the source audio
+Only used in `cover` mode. Fraction of DiT steps that see the source audio
 as context. At `1.0` all steps use the source (near passthrough). At `0.0` no
 steps use the source (pure text2music, source is ignored). At `0.5` the first
 half of the steps are guided by the source structure, the second half are free
 to follow the caption. Lower values give more creative freedom, higher values
-preserve more of the original.
+preserve more of the original. Forced to 1.0 for `lego`, `extract`, `complete`.
+Ignored in `repaint` mode (the mask handles everything).
 
-**`repainting_start`** (float seconds, default `-1` = inactive)
-**`repainting_end`** (float seconds, default `-1` = inactive)
-Only used with `--src-audio`. When one or both are >= 0, repaint mode activates:
-the DiT regenerates the `[start, end)` time region while preserving everything
-else. `-1` on start means 0s (beginning), `-1` on end means source duration
-(end). Error if end <= start after resolve. `audio_cover_strength` is ignored.
+**`repainting_start`** (float seconds, default `-1`)
+**`repainting_end`** (float seconds, default `-1`)
+Region boundaries for `repaint` and `complete` modes.
+`-1` on start means 0s (beginning), `-1` on end means source duration (end).
+Error if end <= start after resolve.
 
-**`lego`** (string, default `""` = inactive)
-Track name for lego mode. Requires `--src-audio` and the **base model**.
-Valid names: `vocals`, `backing_vocals`, `drums`, `bass`, `guitar`,
-`keyboard`, `percussion`, `strings`, `synth`, `fx`, `brass`, `woodwinds`.
-When set, passes the source audio to the DiT as context and builds the
-instruction `"Generate the {TRACK} track based on the audio context:"`.
-`audio_cover_strength` is forced to 1.0 (all steps see the source audio).
-Use `inference_steps=50`, `guidance_scale=1.0`, `shift=1.0` for base model.
+**`task_type`** (string, default `""` = `text2music`)
+Controls the generation mode. This field is the single source of truth for
+what the pipeline does. Empty is equivalent to `text2music`.
+Values: `text2music`, `cover`, `repaint`, `lego`, `extract`, `complete`.
+
+- `text2music`: standard text-to-music synthesis from silence.
+- `cover`: re-synthesize source audio with a new style. Requires `--src-audio`.
+  `audio_cover_strength` controls how many DiT steps see the source.
+- `repaint`: regenerate a time region of the source audio. Requires `--src-audio`
+  and `repainting_start/end`.
+- `lego`: generate a new instrument track over a backing track. Requires
+  `--src-audio` and `track`.
+- `extract`: isolate a track from a mix. Requires `--src-audio` and `track`.
+- `complete`: fill or extend a partial track. Requires `--src-audio` and `track`.
+  Uses `repainting_start/end` for region selection.
+
+`lego`, `extract`, and `complete` force `audio_cover_strength` to 1.0
+(all DiT steps see the source audio).
+
+**`track`** (string, default `""`)
+Track name for `lego`, `extract`, and `complete` modes. Standard names: `vocals`, `backing_vocals`, `drums`,
+`bass`, `guitar`, `keyboard`, `percussion`, `strings`, `synth`, `fx`, `brass`,
+`woodwinds`. Non-standard names produce a warning but are passed through.
 
 ### LM sampling (ace-lm)
 
@@ -623,7 +640,7 @@ Requires `--lm`.
 Three input modes: a JSON array `[{req0}, {req1}]` for batch generation,
 a single `application/json` object for one track, or `multipart/form-data`
 with a `request` part (JSON) and an `audio` part (WAV or MP3) for
-cover/repaint/lego. `synth_batch_size` in each request duplicates it for
+cover/repaint/lego/extract/complete. `synth_batch_size` in each request duplicates it for
 multiple DiT variations (e.g. multipart with `synth_batch_size=3` produces
 3 tracks from the same audio). Total track count (after expansion) is
 clamped to 9.

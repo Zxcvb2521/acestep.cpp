@@ -14,6 +14,7 @@
 #include "philox.h"
 #include "qwen3-enc.h"
 #include "request.h"
+#include "task-types.h"
 #include "timer.h"
 #include "vae-enc.h"
 #include "vae.h"
@@ -282,37 +283,42 @@ int ace_synth_generate(AceSynth *         ctx,
     // seed must be resolved (non-negative) before calling this function.
     AceRequest rr = reqs[0];
 
-    // Lego mode validation (base model only, requires source audio)
-    bool is_lego = !rr.lego.empty();
-    if (is_lego) {
+    // task_type is the master. Empty = text2music.
+    std::string task = rr.task_type;
+    if (task.empty()) {
+        task = TASK_TEXT2MUSIC;
+    }
+
+    // repaint and complete use a binary mask on the source latents
+    bool  is_repaint = (task == TASK_REPAINT || task == TASK_COMPLETE);
+    float rs         = rr.repainting_start;
+    float re         = rr.repainting_end;
+
+    // validation: tasks that need source audio
+    if (task == TASK_COVER || task == TASK_REPAINT || task == TASK_LEGO || task == TASK_EXTRACT ||
+        task == TASK_COMPLETE) {
         if (!have_cover) {
-            fprintf(stderr, "[Lego] ERROR: lego requires source audio\n");
-            return -1;
-        }
-        if (ctx->is_turbo) {
-            fprintf(stderr, "[Lego] ERROR: lego requires the base DiT model (turbo detected)\n");
-            return -1;
-        }
-        // Reference project: TRACK_NAMES (constants.py)
-        static const char * allowed[] = {
-            "vocals",     "backing_vocals", "drums", "bass", "guitar", "keyboard",
-            "percussion", "strings",        "synth", "fx",   "brass",  "woodwinds",
-        };
-        bool valid = false;
-        for (int k = 0; k < 12; k++) {
-            if (rr.lego == allowed[k]) {
-                valid = true;
-                break;
-            }
-        }
-        if (!valid) {
-            fprintf(stderr, "[Lego] ERROR: '%s' is not a valid track name\n", rr.lego.c_str());
-            fprintf(stderr,
-                    "  Valid: vocals, backing_vocals, drums, bass, guitar, keyboard,\n"
-                    "         percussion, strings, synth, fx, brass, woodwinds\n");
+            fprintf(stderr, "[%s] ERROR: requires source audio\n", task.c_str());
             return -1;
         }
     }
+
+    // track name validation for lego/extract/complete
+    if (task == TASK_LEGO || task == TASK_EXTRACT || task == TASK_COMPLETE) {
+        if (!rr.track.empty()) {
+            bool valid = false;
+            for (int k = 0; k < TRACK_NAMES_COUNT; k++) {
+                if (rr.track == TRACK_NAMES[k]) {
+                    valid = true;
+                    break;
+                }
+            }
+            if (!valid) {
+                fprintf(stderr, "[%s] WARNING: '%s' is not a standard track name\n", task.c_str(), rr.track.c_str());
+            }
+        }
+    }
+    fprintf(stderr, "[Pipeline] task=%s\n", task.c_str());
 
     // Extract shared params from first request
     float duration = rr.duration > 0 ? rr.duration : 30.0f;
@@ -398,16 +404,8 @@ int ace_synth_generate(AceSynth *         ctx,
         return -1;
     }
 
-    // Repaint mode: resolve start/end, requires source audio
-    // Both -1 = inactive. One or both >= 0 activates repaint.
-    bool  is_repaint = false;
-    float rs         = rr.repainting_start;
-    float re         = rr.repainting_end;
-    if (rs >= 0.0f || re >= 0.0f) {
-        if (!have_cover) {
-            fprintf(stderr, "[Repaint] ERROR: repainting_start/end require source audio\n");
-            return -1;
-        }
+    // Repaint region: clamp start/end to source duration.
+    if (is_repaint) {
         float src_dur = (float) T_cover * 1920.0f / 48000.0f;
         if (rs < 0.0f) {
             rs = 0.0f;
@@ -421,40 +419,41 @@ int ace_synth_generate(AceSynth *         ctx,
         if (re > src_dur) {
             re = src_dur;
         }
-        if (re > rs) {
-            is_repaint = true;
-            fprintf(stderr, "[Repaint] Region: %.1fs - %.1fs (src=%.1fs)\n", rs, re, src_dur);
-        } else {
+        if (re <= rs) {
             fprintf(stderr, "[Repaint] ERROR: repainting_end (%.1f) <= repainting_start (%.1f)\n", re, rs);
             return -1;
         }
+        fprintf(stderr, "[Repaint] Region: %.1fs - %.1fs (src=%.1fs)\n", rs, re, src_dur);
     }
 
-    // 2. Build formatted prompts
-    // Reference project instruction templates (constants.py TASK_INSTRUCTIONS):
-    //   text2music = "Fill the audio semantic mask..."
-    //   cover      = "Generate audio semantic tokens..."
-    //   repaint    = "Repaint the mask area..."
-    //   lego       = "Generate the {TRACK_NAME} track based on the audio context:"
-    // Auto-switches to cover when audio_codes are present
-    bool        is_cover = have_cover || have_codes;
+    // DiT instruction from task_type (drives cross-attention behavior).
+    // Track name is UPPERCASE in the instruction (matches Python task_utils.py).
+    std::string track_upper = rr.track;
+    for (char & c : track_upper) {
+        c = (char) toupper((unsigned char) c);
+    }
+
     std::string instruction_str;
-    if (is_lego) {
-        // Lego mode: force audio_cover_strength=1.0 so all DiT steps see the source audio
-        rr.audio_cover_strength = 1.0f;
-        fprintf(stderr, "[Lego] track=%s, cover path, strength=1.0\n", rr.lego.c_str());
-        // Reference project (task_utils.py:86): track name is UPPERCASE
-        std::string track_upper = rr.lego;
-        for (char & c : track_upper) {
-            c = (char) toupper((unsigned char) c);
-        }
-        instruction_str = "Generate the " + track_upper + " track based on the audio context:";
-    } else if (is_repaint) {
-        instruction_str = "Repaint the mask area based on the given conditions:";
-    } else if (is_cover) {
-        instruction_str = "Generate audio semantic tokens based on the given conditions:";
+    if (task == TASK_LEGO) {
+        instruction_str = dit_instr_lego(track_upper);
+    } else if (task == TASK_EXTRACT) {
+        instruction_str = dit_instr_extract(track_upper);
+    } else if (task == TASK_COMPLETE) {
+        instruction_str = dit_instr_complete(track_upper);
+    } else if (task == TASK_REPAINT) {
+        instruction_str = DIT_INSTR_REPAINT;
+    } else if (task == TASK_COVER || have_cover || have_codes) {
+        // cover instruction whenever source latents are present in context.
+        // this includes text2music with LM-generated audio_codes: the DiT
+        // sees decoded latents (not silence) and was trained with this instruction.
+        instruction_str = DIT_INSTR_COVER;
     } else {
-        instruction_str = "Fill the audio semantic mask based on the given conditions:";
+        instruction_str = DIT_INSTR_TEXT2MUSIC;
+    }
+
+    // lego/extract/complete: force strength=1.0 (all DiT steps see source audio)
+    if (task == TASK_LEGO || task == TASK_EXTRACT || task == TASK_COMPLETE) {
+        rr.audio_cover_strength = 1.0f;
     }
 
     // 2. Timbre features (shared: same reference audio or silence for all batch elements)

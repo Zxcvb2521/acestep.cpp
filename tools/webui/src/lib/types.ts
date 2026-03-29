@@ -24,7 +24,8 @@ export interface AceRequest {
 	audio_cover_strength?: number;
 	repainting_start?: number;
 	repainting_end?: number;
-	lego?: string;
+	task_type?: string;
+	track?: string;
 }
 
 // GET /health response

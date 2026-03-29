@@ -1,0 +1,51 @@
+#pragma once
+// task-types.h: ACE-Step task types, instructions, and track names.
+//
+// All instruction strings and task identifiers live here.
+// Pipeline order: LM -> DiT -> Understand.
+
+#include <string>
+
+// task type identifiers
+inline constexpr const char * TASK_TEXT2MUSIC = "text2music";
+inline constexpr const char * TASK_COVER      = "cover";
+inline constexpr const char * TASK_REPAINT    = "repaint";
+inline constexpr const char * TASK_LEGO       = "lego";
+inline constexpr const char * TASK_EXTRACT    = "extract";
+inline constexpr const char * TASK_COMPLETE   = "complete";
+
+// LM system instruction (Composer Agent: text -> metadata + audio codes)
+inline constexpr const char * LM_INSTRUCTION = "Generate audio semantic tokens based on the given conditions:";
+
+// Understand system instruction (Listener: audio codes -> metadata + lyrics)
+inline constexpr const char * LM_UNDERSTAND_INSTRUCTION =
+    "Understand the given musical conditions and describe the audio semantics accordingly:";
+
+// DiT instructions (injected into text encoder cross-attention).
+// Fixed instructions for tasks without track name.
+inline constexpr const char * DIT_INSTR_TEXT2MUSIC = "Fill the audio semantic mask based on the given conditions:";
+inline constexpr const char * DIT_INSTR_COVER      = "Generate audio semantic tokens based on the given conditions:";
+inline constexpr const char * DIT_INSTR_REPAINT    = "Repaint the mask area based on the given conditions:";
+
+// DiT instructions with track name (UPPERCASE). Inline helpers return std::string.
+static inline std::string dit_instr_lego(const std::string & track) {
+    return "Generate the " + track + " track based on the audio context:";
+}
+
+static inline std::string dit_instr_extract(const std::string & track) {
+    return "Extract the " + track + " track from the audio:";
+}
+
+static inline std::string dit_instr_complete(const std::string & track) {
+    if (track.empty()) {
+        return "Complete the input track:";
+    }
+    return "Complete the input track with " + track + ":";
+}
+
+// valid track names for lego/extract/complete
+inline constexpr const char * TRACK_NAMES[] = {
+    "vocals",     "backing_vocals", "drums", "bass", "guitar", "keyboard",
+    "percussion", "strings",        "synth", "fx",   "brass",  "woodwinds",
+};
+inline constexpr int TRACK_NAMES_COUNT = 12;

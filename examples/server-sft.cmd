@@ -1,6 +1,5 @@
 @echo off
 
-chcp 65001
 set PATH=%~dp0..\build\Release;%PATH%
 
 ace-server.exe ^

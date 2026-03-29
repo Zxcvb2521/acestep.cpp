@@ -41,7 +41,8 @@ void request_init(AceRequest * r) {
     r->audio_cover_strength = 0.5f;
     r->repainting_start     = -1.0f;
     r->repainting_end       = -1.0f;
-    r->lego                 = "";
+    r->task_type            = "";
+    r->track                = "";
 }
 
 // helper: get yyjson string as std::string
@@ -75,8 +76,11 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     if ((v = yyjson_obj_get(obj, "lm_negative_prompt")) && yyjson_is_str(v)) {
         r->lm_negative_prompt = yy_str(v);
     }
-    if ((v = yyjson_obj_get(obj, "lego")) && yyjson_is_str(v)) {
-        r->lego = yy_str(v);
+    if ((v = yyjson_obj_get(obj, "task_type")) && yyjson_is_str(v)) {
+        r->task_type = yy_str(v);
+    }
+    if ((v = yyjson_obj_get(obj, "track")) && yyjson_is_str(v)) {
+        r->track = yy_str(v);
     }
 
     // ints
@@ -258,8 +262,11 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r) {
     yyjson_mut_obj_add_real(doc, root, "audio_cover_strength", r->audio_cover_strength);
     yyjson_mut_obj_add_real(doc, root, "repainting_start", r->repainting_start);
     yyjson_mut_obj_add_real(doc, root, "repainting_end", r->repainting_end);
-    if (!r->lego.empty()) {
-        yyjson_mut_obj_add_str(doc, root, "lego", r->lego.c_str());
+    if (!r->task_type.empty()) {
+        yyjson_mut_obj_add_str(doc, root, "task_type", r->task_type.c_str());
+    }
+    if (!r->track.empty()) {
+        yyjson_mut_obj_add_str(doc, root, "track", r->track.c_str());
     }
     yyjson_mut_obj_add_str(doc, root, "audio_codes", r->audio_codes.c_str());
 
@@ -313,8 +320,11 @@ void request_dump(const AceRequest * r, FILE * f) {
     if (r->repainting_start >= 0.0f || r->repainting_end >= 0.0f) {
         fprintf(f, "[Request] repaint: start=%.1f end=%.1f\n", r->repainting_start, r->repainting_end);
     }
-    if (!r->lego.empty()) {
-        fprintf(f, "[Request] lego: %s\n", r->lego.c_str());
+    if (!r->task_type.empty()) {
+        fprintf(f, "[Request] task_type: %s\n", r->task_type.c_str());
+    }
+    if (!r->track.empty()) {
+        fprintf(f, "[Request] track: %s\n", r->track.c_str());
     }
     fprintf(f, "[Request] audio_codes: %s\n", r->audio_codes.empty() ? "(none)" : "(present)");
 }

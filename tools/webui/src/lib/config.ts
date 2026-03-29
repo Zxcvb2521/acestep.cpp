@@ -2,3 +2,26 @@
 export const HEALTH_POLL_MS = 10000;
 export const FETCH_TIMEOUT_MS = 2000;
 export const WAVEFORM_HEIGHT = 64;
+
+// task types (mirrors task-types.h)
+export const TASK_TEXT2MUSIC = 'text2music';
+export const TASK_COVER = 'cover';
+export const TASK_REPAINT = 'repaint';
+export const TASK_LEGO = 'lego';
+export const TASK_EXTRACT = 'extract';
+export const TASK_COMPLETE = 'complete';
+
+export const TRACK_NAMES = [
+	'vocals',
+	'backing_vocals',
+	'drums',
+	'bass',
+	'guitar',
+	'keyboard',
+	'percussion',
+	'strings',
+	'synth',
+	'fx',
+	'brass',
+	'woodwinds'
+] as const;

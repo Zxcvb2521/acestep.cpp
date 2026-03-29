@@ -4,6 +4,7 @@
 #include "audio-io.h"
 #include "pipeline-synth.h"
 #include "request.h"
+#include "task-types.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -173,7 +174,7 @@ int main(int argc, char ** argv) {
             return 1;
         }
         request_dump(&reqs[ri], stderr);
-        if (reqs[ri].caption.empty() && reqs[ri].lego.empty()) {
+        if (reqs[ri].caption.empty() && reqs[ri].task_type != TASK_LEGO && reqs[ri].task_type != TASK_EXTRACT) {
             fprintf(stderr, "[Request] FATAL: caption is empty in %s\n", rpath);
             ace_synth_free(ctx);
             free(src_interleaved);

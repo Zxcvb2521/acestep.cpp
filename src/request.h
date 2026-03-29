@@ -53,11 +53,12 @@ struct AceRequest {
     float repainting_start;  // -1
     float repainting_end;    // -1
 
-    // lego mode (requires source audio, base model only)
-    // Track name from TRACK_NAMES: vocals, backing_vocals, drums, bass, guitar,
-    // keyboard, percussion, strings, synth, fx, brass, woodwinds.
-    // Empty = not lego. Sets instruction, cover path, strength=1.0.
-    std::string lego;  // ""
+    // task type: "" = auto-detect from data, or one of:
+    // text2music, cover, repaint, lego, extract, complete
+    std::string task_type;  // ""
+
+    // track name for lego/extract/complete (e.g. "vocals", "drums", "guitar")
+    std::string track;  // ""
 };
 
 // Initialize all fields to defaults (matches Python GenerationParams defaults)
