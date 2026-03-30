@@ -592,16 +592,6 @@
 
 	<div class="selector-row">
 		<label class="selector-label"
-			>Batch <input
-				type="number"
-				class="batch-input"
-				min="1"
-				max="9"
-				bind:value={app.request.synth_batch_size}
-				placeholder="1"
-			/></label
-		>
-		<label class="selector-label"
 			>Task <select
 				class="batch-input"
 				value={taskType}
@@ -627,6 +617,16 @@
 	</div>
 
 	<div class="selector-row">
+		<label class="selector-label"
+			>Batch <input
+				type="number"
+				class="batch-input"
+				min="1"
+				max="9"
+				bind:value={app.request.synth_batch_size}
+				placeholder="1"
+			/></label
+		>
 		<span class="selector-label">Format</span>
 		<label class="selector-label">
 			<input type="radio" name="format" value="mp3" bind:group={app.format} /> MP3
@@ -718,6 +718,7 @@
 	}
 	.model-row select {
 		flex: 1;
+		min-width: 0;
 	}
 	.selector-row {
 		display: flex;

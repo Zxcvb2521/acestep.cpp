@@ -28,11 +28,6 @@
 		return () => clearInterval(id);
 	});
 
-	function statusClass(hasModels: boolean): string {
-		if (!app.props) return 'st-off';
-		return hasModels ? 'st-ok' : 'st-disabled';
-	}
-
 	function onVolume(e: Event) {
 		app.volume = Number((e.target as HTMLInputElement).value);
 	}
@@ -52,8 +47,6 @@
 		<label class="dark-toggle">
 			<input type="checkbox" bind:checked={app.dark} /> Dark
 		</label>
-		<span class="status-badge {statusClass((app.props?.models.lm.length ?? 0) > 0)}">LM</span>
-		<span class="status-badge {statusClass((app.props?.models.dit.length ?? 0) > 0)}">Synth</span>
 		<div class="volume">
 			<Volume2 size={14} />
 			<input type="range" min="0" max="1" step="0.01" value={app.volume} oninput={onVolume} />
@@ -84,9 +77,6 @@
 		--border: #3a3a3a;
 		--focus: #2ed573;
 		--error: #ff6b6b;
-		--color-ok: #2ed573;
-		--color-disabled: #ff4757;
-		--color-off: #555;
 		--waveform-dim: #555;
 		--waveform-play: #2ed573;
 		--waveform-range: #ff6b6b;
@@ -103,9 +93,6 @@
 		--border: #ccc;
 		--focus: #27ae60;
 		--error: #c0392b;
-		--color-ok: #27ae60;
-		--color-disabled: #e74c3c;
-		--color-off: #bbb;
 		--waveform-dim: #ccc;
 		--waveform-play: #27ae60;
 		--waveform-range: #e74c3c;
@@ -145,23 +132,6 @@
 		font-size: 0.7rem;
 		color: var(--fg-dim);
 		align-self: flex-end;
-	}
-	.status-badge {
-		font-size: 0.7rem;
-		font-weight: 600;
-		font-family: monospace;
-		padding: 0.1rem 0.4rem;
-		border-radius: 3px;
-		color: #000;
-	}
-	.st-ok {
-		background: var(--color-ok);
-	}
-	.st-disabled {
-		background: var(--color-disabled);
-	}
-	.st-off {
-		background: var(--color-off);
 	}
 	.spacer {
 		flex: 1;
