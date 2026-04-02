@@ -321,6 +321,70 @@ Available track names for lego, extract, and complete: `vocals`, `backing_vocals
 `drums`, `bass`, `guitar`, `keyboard`, `percussion`, `strings`, `synth`, `fx`,
 `brass`, `woodwinds`.
 
+### Model compatibility
+
+| Task | Turbo | Base/SFT | LM used |
+|------|-------|----------|---------|
+| text2music | yes | yes | yes |
+| cover | yes | yes | no (skipped) |
+| repaint | yes | yes | no (skipped) |
+| lego | no | yes | yes |
+| extract | no | yes | no (skipped) |
+| complete | no | yes | yes |
+
+For skipped tasks, `caption` and `lyrics` are passed verbatim to the DiT.
+
+### DiT context per mode
+
+What the DiT actually receives in its 128-channel context `[src(64) | mask(64)]`:
+
+| Mode | src channels | mask value | instruction |
+|------|-------------|------------|-------------|
+| text2music | silence | 1.0 | "Fill the audio semantic mask..." |
+| cover | FSQ(src) roundtrip | 1.0 | "Generate audio semantic tokens..." |
+| repaint | silence in zone / src outside | 0.0 outside / 1.0 in zone | "Repaint the mask area..." |
+| lego (no region) | raw VAE src everywhere | 1.0 | "Generate the TRACK track..." |
+| lego (with region) | raw VAE src everywhere | 0.0 outside / 1.0 in zone | "Generate the TRACK track..." |
+| extract | raw VAE src | 1.0 | "Extract the TRACK track..." |
+| complete | raw VAE src | 1.0 | "Complete the input track..." |
+
+cover uses an FSQ roundtrip (tokenize 25Hz->5Hz then detokenize 5Hz->25Hz) to give
+the DiT creative freedom while retaining rhythmic/melodic structure from the source.
+All other tasks with source audio use raw VAE latents (no FSQ).
+
+### Region-mode pipeline (repaint + lego with region)
+
+Three mechanisms stack on top of each other when a repaint region is active:
+
+1. **Step injection** (denoising loop, first 50% of steps): frames outside the
+   region are forced back to `t_next * noise + (1 - t_next) * src_latents` at each
+   step. This prevents the DiT from drifting outside the preserved zone.
+   For repaint: src_latents = full source (prevents decay of preserved content).
+   For lego: same formula, src = full backing track.
+
+2. **Latent boundary blend** (post-generation, pre-VAE): 12-frame linear crossfade
+   at region edges. Outside-zone latents blend from generated toward source.
+   Formula: `output[t] = m * generated[t] + (1-m) * src[t]`
+   where m ramps 0->1 approaching the zone boundary.
+
+3. **Waveform splice** (post-VAE decode): replaces non-region audio samples with
+   the original PCM from `src_audio` (interleaved input), with a 25ms linear
+   crossfade at zone edges. Eliminates VAE reconstruction artifacts in preserved
+   regions. Skipped if region covers the full duration.
+
+Key difference repaint vs lego: repaint silences the zone in the DiT context src
+(so the DiT generates fresh content there). Lego keeps the full backing track in
+context even inside the zone (DiT generates a new layer that harmonizes with it).
+
+### CLI scope
+
+`ace-synth` and `ace-lm` expose cover and repaint via `--src-audio` with all
+model types. Lego, extract, and complete are accessible via JSON request
+(`task_type` field) and the HTTP server, but have no dedicated CLI flag:
+pass `--src-audio` and set `task_type` in the JSON directly. These three modes
+require a base or SFT model (not turbo).
+
+
 ## Request JSON reference
 
 Only `caption` is required. All other fields default to "unset" which means
@@ -435,7 +499,7 @@ steps use the source (pure text2music, source is ignored). Values below 1.0
 switch DiT context to silence and encoder hidden states to text2music
 instruction at the corresponding step. Lower values give more creative
 freedom, higher values preserve more of the original structure.
-Forced to 1.0 for `lego`, `extract`, `complete`.
+Defaults to 1.0 for `lego`, `extract`, `complete` (context-switch inactive for these modes).
 Ignored in `repaint` mode (the mask handles everything).
 
 **`cover_noise_strength`** (float, default `0.0`)
@@ -446,9 +510,9 @@ noise level. `cover_steps` is recalculated against the remaining steps.
 
 **`repainting_start`** (float seconds, default `-1`)
 **`repainting_end`** (float seconds, default `-1`)
-Region boundaries for `repaint` and `complete` modes.
+Region boundaries for `repaint` and `lego` modes (lego uses region-constrained generation).
 `-1` on start means 0s (beginning), `-1` on end means source duration (end).
-Error if end <= start after resolve.
+Ignored for all other task types. Error if end <= start after resolve.
 
 **`task_type`** (string, default `""` = `text2music`)
 Controls the generation mode. This field is the single source of truth for
@@ -459,15 +523,23 @@ Values: `text2music`, `cover`, `repaint`, `lego`, `extract`, `complete`.
 - `cover`: re-synthesize source audio with a new style. Requires `--src-audio`.
   `audio_cover_strength` controls how many DiT steps see the source.
 - `repaint`: regenerate a time region of the source audio. Requires `--src-audio`
-  and `repainting_start/end`.
-- `lego`: generate a new instrument track over a backing track. Requires
-  `--src-audio` and `track`.
-- `extract`: isolate a track from a mix. Requires `--src-audio` and `track`.
-- `complete`: fill or extend a partial track. Requires `--src-audio` and `track`.
-  Uses `repainting_start/end` for region selection.
+  and `repainting_start/end`. Step injection keeps frames outside the zone anchored
+  to the source; a waveform splice restores them to the original PCM post-decode.
+- `lego`: generate a new instrument track in context of a backing track. Requires
+  `--src-audio` and `track`. Base model only. Output is the generated track
+  (behavior analogous to stem generation; the output mix vs isolated stem is
+  model-dependent and unverified in this codebase).
+  Supports optional region constraint via `repainting_start/end`.
+- `extract`: isolate a specific stem from a mixed source. Requires `--src-audio`
+  and `track`. Base model only. LM is skipped (same as cover/repaint).
+- `complete`: generate a full mix from a single isolated stem. Requires `--src-audio`
+  (the isolated stem, e.g. a cappella vocals) and `track` (what to add, e.g. `drums`).
+  Base model only. Output duration = source duration. The DiT regenerates all frames
+  conditioned on the stem; it does NOT splice or extend temporally.
+  `track` can be a pre-formatted string like `"VOCALS | DRUMS"` for multi-stem.
 
-`lego`, `extract`, and `complete` force `audio_cover_strength` to 1.0
-(all DiT steps see the source audio).
+`lego`, `extract`, and `complete` always use the full source context
+(`audio_cover_strength` defaults to 1.0 and the context-switch mechanism is inactive).
 
 **`track`** (string, default `""`)
 Track name for `lego`, `extract`, and `complete` modes. Standard names: `vocals`, `backing_vocals`, `drums`,
