@@ -32,13 +32,33 @@
 	let needsTrack = $derived(
 		taskType === TASK_LEGO || taskType === TASK_EXTRACT || taskType === TASK_COMPLETE
 	);
+	let singleTrack = $derived(taskType === TASK_LEGO || taskType === TASK_EXTRACT);
 
-	// auto-fill track when switching to a mode that needs one, clear when leaving
+	// track selection: radio for lego/extract, multi for complete
+	let selectedTracks: Set<string> = $state(new Set());
+
+	function toggleTrack(name: string) {
+		let next = new Set(selectedTracks);
+		if (next.has(name)) {
+			next.delete(name);
+		} else {
+			if (singleTrack) next.clear();
+			next.add(name);
+		}
+		selectedTracks = next;
+	}
+
+	// sync set to request string (preserve TRACK_NAMES order)
 	$effect(() => {
-		if (needsTrack && !app.request.track) {
-			app.request.track = TRACK_NAMES[0];
-		} else if (!needsTrack && app.request.track) {
-			app.request.track = '';
+		app.request.track = TRACK_NAMES.filter((n: string) => selectedTracks.has(n)).join(' | ');
+	});
+
+	// clear tracks when task has no use for them, trim to 1 for radio modes
+	$effect(() => {
+		if (!needsTrack) {
+			if (selectedTracks.size > 0) selectedTracks = new Set();
+		} else if (singleTrack && selectedTracks.size > 1) {
+			selectedTracks = new Set([...selectedTracks].slice(0, 1));
 		}
 	});
 
@@ -47,6 +67,7 @@
 		setRequest({ caption: '' });
 		app.pendingRequests = [];
 		app.pendingIndex = 0;
+		selectedTracks = new Set();
 	}
 
 	function exportJson() {
@@ -582,6 +603,42 @@
 	<button type="button" disabled={busy} onclick={compose}>Compose</button>
 
 	<details open>
+		<summary>Task</summary>
+		<div class="details-body">
+			<div class="model-row">
+				<span class="model-label">Type</span>
+				<select
+					value={taskType}
+					onchange={(e) => {
+						app.request.task_type = e.currentTarget.value;
+					}}
+				>
+					<option value="">text2music</option>
+					<option value={TASK_COVER}>cover</option>
+					<option value={TASK_REPAINT}>repaint</option>
+					<option value={TASK_LEGO}>lego</option>
+					<option value={TASK_EXTRACT}>extract</option>
+					<option value={TASK_COMPLETE}>complete</option>
+				</select>
+			</div>
+			<div class="model-row track-row">
+				<span class="model-label">Track</span>
+				<div class="track-grid">
+					{#each TRACK_NAMES as name}
+						<button
+							type="button"
+							class="track-pill"
+							class:active={selectedTracks.has(name)}
+							disabled={!needsTrack}
+							onclick={() => toggleTrack(name)}>{name}</button
+						>
+					{/each}
+				</div>
+			</div>
+		</div>
+	</details>
+
+	<details open>
 		<summary>Flow matching parameters</summary>
 		<div class="details-body">
 			<div class="meta-grid">
@@ -633,32 +690,6 @@
 			</div>
 		</div>
 	</details>
-
-	<div class="selector-row">
-		<label class="selector-label"
-			>Task <select
-				class="batch-input"
-				value={taskType}
-				onchange={(e) => {
-					app.request.task_type = e.currentTarget.value;
-				}}
-			>
-				<option value="">text2music</option>
-				<option value={TASK_COVER}>cover</option>
-				<option value={TASK_REPAINT}>repaint</option>
-				<option value={TASK_LEGO}>lego</option>
-				<option value={TASK_EXTRACT}>extract</option>
-				<option value={TASK_COMPLETE}>complete</option>
-			</select></label
-		>
-		<label class="selector-label"
-			>Track <select class="batch-input" bind:value={app.request.track}>
-				{#each TRACK_NAMES as name}
-					<option value={name}>{name}</option>
-				{/each}
-			</select></label
-		>
-	</div>
 
 	<div class="selector-row">
 		<label class="selector-label"
@@ -817,6 +848,32 @@
 	}
 	button:disabled {
 		opacity: 0.4;
+	}
+	.track-row {
+		align-items: flex-start;
+	}
+	.track-row .model-label {
+		padding-top: 0.2rem;
+	}
+	.track-grid {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+	}
+	.track-pill {
+		padding: 0.2rem 0.5rem;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		font-size: 0.8rem;
+		font-family: inherit;
+		cursor: pointer;
+		background: var(--bg-input);
+		color: var(--fg-dim);
+	}
+	.track-pill.active {
+		background: var(--bg-btn-hover);
+		color: var(--fg);
+		border-color: var(--focus);
 	}
 	.lm-row {
 		display: flex;
