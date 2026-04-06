@@ -59,11 +59,14 @@ struct AceRequest {
     float repaint_strength;  // 0.5
 
     // task type: "" = auto-detect from data, or one of:
-    // text2music, cover, repaint, lego, extract, complete
+    // text2music, cover, cover-nofsq, repaint, lego, extract, complete
     std::string task_type;  // ""
 
     // track name for lego/extract/complete (e.g. "vocals", "drums", "guitar")
     std::string track;  // ""
+
+    // inference method: "" or "ode" = ODE Euler, "sde" = SDE Stochastic
+    std::string infer_method;  // ""
 };
 
 // Initialize all fields to defaults (matches Python GenerationParams defaults)

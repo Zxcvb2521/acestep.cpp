@@ -218,6 +218,7 @@
 		if (synth_batch_size != null && synth_batch_size >= 1) out.synth_batch_size = synth_batch_size;
 		if (r.task_type) out.task_type = String(r.task_type);
 		if (r.track) out.track = String(r.track);
+		if (r.infer_method) out.infer_method = String(r.infer_method);
 		if (r.synth_model) out.synth_model = String(r.synth_model);
 		if (r.lm_model) out.lm_model = String(r.lm_model);
 		if (r.lora && loraList.includes(String(r.lora))) out.lora = String(r.lora);
@@ -349,6 +350,9 @@
 			const t = app.request.task_type || '';
 			if (t) synthParams.task_type = t;
 			if (app.request.track) synthParams.track = app.request.track;
+			// infer_method from form
+			const im = app.request.infer_method || '';
+			if (im) synthParams.infer_method = im;
 			// model routing from form
 			if (app.request.synth_model) synthParams.synth_model = app.request.synth_model;
 			if (app.request.lora && loraList.includes(String(app.request.lora)))
@@ -693,6 +697,17 @@
 						placeholder={ph(d?.shift)}
 						bind:value={app.request.shift}
 					/></label
+				>
+				<label
+					>Method <select
+						value={app.request.infer_method || ''}
+						onchange={(e) => {
+							app.request.infer_method = e.currentTarget.value;
+						}}
+					>
+						<option value="">ODE Euler</option>
+						<option value="sde">SDE Stochastic</option>
+					</select></label
 				>
 				<label
 					>Seed <input type="text" placeholder={ph(d?.seed)} bind:value={app.request.seed} /></label

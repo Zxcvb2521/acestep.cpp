@@ -7,6 +7,7 @@
 #include "debug.h"
 #include "dit-graph.h"
 #include "dit.h"
+#include "philox.h"
 
 #include <cmath>
 #include <cstdio>
@@ -137,21 +138,23 @@ static int dit_ggml_generate(DiTGGML *           model,
                              int                 num_steps,
                              const float *       schedule,
                              float *             output,
-                             float               guidance_scale     = 1.0f,
-                             const DebugDumper * dbg                = nullptr,
-                             const float *       context_switch     = nullptr,
-                             int                 cover_steps        = -1,
-                             bool (*cancel)(void *)                 = nullptr,
-                             void *        cancel_data              = nullptr,
-                             const int *   real_S                   = nullptr,
-                             const int *   real_enc_S               = nullptr,
-                             const float * enc_switch               = nullptr,
-                             const int *   real_enc_S_switch        = nullptr,
-                             const float * repaint_src              = nullptr,
-                             int           repaint_t0               = 0,
-                             int           repaint_t1               = 0,
-                             float         repaint_injection_ratio  = 0.5f,
-                             int           repaint_crossfade_frames = 0) {
+                             float               guidance_scale       = 1.0f,
+                             const DebugDumper * dbg                  = nullptr,
+                             const float *       context_switch       = nullptr,
+                             int                 cover_steps          = -1,
+                             bool (*cancel)(void *)                   = nullptr,
+                             void *          cancel_data              = nullptr,
+                             const int *     real_S                   = nullptr,
+                             const int *     real_enc_S               = nullptr,
+                             const float *   enc_switch               = nullptr,
+                             const int *     real_enc_S_switch        = nullptr,
+                             const float *   repaint_src              = nullptr,
+                             int             repaint_t0               = 0,
+                             int             repaint_t1               = 0,
+                             float           repaint_injection_ratio  = 0.5f,
+                             int             repaint_crossfade_frames = 0,
+                             bool            use_sde                  = false,
+                             const int64_t * seeds                    = nullptr) {
     DiTGGMLConfig & c       = model->cfg;
     int             Oc      = c.out_channels;      // 64
     int             ctx_ch  = c.in_channels - Oc;  // 128
@@ -503,15 +506,33 @@ static int dit_ggml_generate(DiTGGML *           model,
             debug_dump_2d(dbg, name, vt.data(), T, Oc);
         }
 
-        // euler step (all N samples)
+        // step update (all N samples)
         if (step == num_steps - 1) {
+            // final step: predict x0 (same for ODE and SDE)
             for (int i = 0; i < n_total; i++) {
                 output[i] = xt[i] - vt[i] * t_curr;
             }
         } else {
-            float dt = t_curr - schedule[step + 1];
-            for (int i = 0; i < n_total; i++) {
-                xt[i] -= vt[i] * dt;
+            float t_next = schedule[step + 1];
+
+            if (use_sde && seeds) {
+                // SDE: predict x0, re-noise with fresh Philox noise.
+                // seed offset per step gives reproducible stochastic trajectories.
+                for (int b = 0; b < N; b++) {
+                    std::vector<float> fresh(n_per);
+                    philox_randn(seeds[b] + step + 1, fresh.data(), n_per, true);
+                    for (int i = 0; i < n_per; i++) {
+                        int   idx = b * n_per + i;
+                        float x0  = xt[idx] - vt[idx] * t_curr;
+                        xt[idx]   = t_next * fresh[i] + (1.0f - t_next) * x0;
+                    }
+                }
+            } else {
+                // ODE Euler: x_{t+1} = x_t - v_t * dt
+                float dt = t_curr - t_next;
+                for (int i = 0; i < n_total; i++) {
+                    xt[i] -= vt[i] * dt;
+                }
             }
 
             // repaint injection: replace preserved regions with noised source.
@@ -521,7 +542,6 @@ static int dit_ggml_generate(DiTGGML *           model,
             if (repaint_src && repaint_t1 > repaint_t0) {
                 int injection_cutoff = (int) (repaint_injection_ratio * (float) num_steps + 0.5f);
                 if (step < injection_cutoff) {
-                    float t_next = schedule[step + 1];
                     for (int b = 0; b < N; b++) {
                         for (int t = 0; t < T; t++) {
                             if (t < repaint_t0 || t >= repaint_t1) {

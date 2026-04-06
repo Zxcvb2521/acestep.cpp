@@ -612,11 +612,13 @@ void ops_init_noise_and_repaint(AceSynth * ctx, const AceRequest * reqs, int bat
     // Generate N s.noise samples (Philox4x32-10, matches torch.randn on CUDA with bf16).
     // Each batch item uses its own seed from the request.
     s.noise.resize(batch_n * s.Oc * s.T);
+    s.seeds.resize(batch_n);
     for (int b = 0; b < batch_n; b++) {
         float * dst = s.noise.data() + b * s.Oc * s.T;
+        s.seeds[b]  = reqs[b].seed;
         philox_randn(reqs[b].seed, dst, s.Oc * s.T, /*bf16_round=*/true);
-        fprintf(stderr, "[Init-Noise Batch%d] Philox noise seed=%lld, [%d, %d]\n", b, (long long) reqs[b].seed, s.T,
-                s.Oc);
+        fprintf(stderr, "[Init-Noise Batch%d] Philox noise seed=%lld, [%d, %d]%s\n", b, (long long) reqs[b].seed, s.T,
+                s.Oc, s.use_sde ? " (SDE)" : "");
     }
 
     // cover_noise_strength: blend initial s.noise with source latents.
@@ -697,7 +699,7 @@ int ops_dit_generate(AceSynth * ctx, int batch_n, SynthState & s, bool (*cancel)
                                    s.enc_hidden_nc.empty() ? nullptr : s.enc_hidden_nc.data(),
                                    s.per_enc_S_nc_final.empty() ? nullptr : s.per_enc_S_nc_final.data(),
                                    s.repaint_src.empty() ? nullptr : s.repaint_src.data(), s.repaint_t0, s.repaint_t1,
-                                   s.repaint_injection_ratio, s.repaint_crossfade_frames);
+                                   s.repaint_injection_ratio, s.repaint_crossfade_frames, s.use_sde, s.seeds.data());
     if (dit_rc != 0) {
         return -1;
     }

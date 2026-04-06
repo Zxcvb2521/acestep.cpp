@@ -434,6 +434,7 @@ the LLM fills them, or a sensible runtime default is applied.
     "repainting_end":       -1,
     "task_type":            "",
     "track":                "",
+    "infer_method":         "",
     "synth_model":          "",
     "lm_model":             "",
     "lora":                 "",
@@ -632,6 +633,13 @@ Any value > 1.0 on a turbo model is overridden to 1.0 with a warning.
 Flow-matching schedule shift. Controls the timestep distribution.
 `shift = s*t / (1 + (s-1)*t)`. `0.0` resolves from the loaded model:
 turbo = `3.0`, base/SFT = `1.0`.
+
+**`infer_method`** (string, default `""` = ODE Euler)
+Diffusion solver. `""` or `"ode"` uses ODE Euler (one model eval per step,
+same seed always gives same result). `"sde"` uses SDE Stochastic (predicts x0
+then re-noises with fresh Philox noise at each step, producing varied results
+across different trajectories). SDE is reproducible: the per-step noise is
+derived from the original seed so the same seed gives the same SDE trajectory.
 
 Turbo preset: `inference_steps=8, guidance_scale=1.0, shift=3.0`.
 Base/SFT preset: `inference_steps=50, guidance_scale=1.0, shift=1.0`.
@@ -991,7 +999,7 @@ ace-synth
   CondEncoder (lyric 8L + timbre 4L + text_proj)
   FSQ detokenizer (audio codes -> flow matching source latents)
   LoRA merge (optional: safetensors delta -> dequant/merge/requant at load)
-  DiT (24L flow matching, Euler steps)
+  DiT (24L flow matching, ODE Euler or SDE Stochastic)
   VAE (AutoencoderOobleck, tiled decode)
   WAV stereo 48kHz
 

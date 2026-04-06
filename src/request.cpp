@@ -43,6 +43,7 @@ void request_init(AceRequest * r) {
     r->repaint_strength     = 0.5f;
     r->task_type            = "";
     r->track                = "";
+    r->infer_method         = "";
 }
 
 // helper: get yyjson string as std::string
@@ -81,6 +82,9 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     }
     if ((v = yyjson_obj_get(obj, "track")) && yyjson_is_str(v)) {
         r->track = yy_str(v);
+    }
+    if ((v = yyjson_obj_get(obj, "infer_method")) && yyjson_is_str(v)) {
+        r->infer_method = yy_str(v);
     }
 
     // ints
@@ -283,6 +287,9 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r) {
     if (!r->track.empty()) {
         yyjson_mut_obj_add_str(doc, root, "track", r->track.c_str());
     }
+    if (!r->infer_method.empty()) {
+        yyjson_mut_obj_add_str(doc, root, "infer_method", r->infer_method.c_str());
+    }
     yyjson_mut_obj_add_str(doc, root, "audio_codes", r->audio_codes.c_str());
 
     return doc;
@@ -342,6 +349,9 @@ void request_dump(const AceRequest * r, FILE * f) {
     }
     if (!r->track.empty()) {
         fprintf(f, "[Request] track: %s\n", r->track.c_str());
+    }
+    if (!r->infer_method.empty()) {
+        fprintf(f, "[Request] infer_method: %s\n", r->infer_method.c_str());
     }
     fprintf(f, "[Request] audio_codes: %s\n", r->audio_codes.empty() ? "(none)" : "(present)");
 }

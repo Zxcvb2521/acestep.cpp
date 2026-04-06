@@ -286,6 +286,9 @@ int ace_synth_generate(AceSynth *         ctx,
     // Timestep schedule
     ops_build_schedule(s);
 
+    // SDE mode: "sde" = stochastic re-noising at each step
+    s.use_sde = (s.rr.infer_method == "sde");
+
     // Resolve latent frame count T
     if (ops_resolve_T(ctx, s) != 0) {
         return -1;
