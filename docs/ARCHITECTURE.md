@@ -77,10 +77,12 @@ Default downloads 4 files into `models/`:
 |------|------|------|
 | Qwen3-Embedding-0.6B-Q8_0.gguf | text encoder (28L, H=1024) | 748 MB |
 | acestep-5Hz-lm-4B-Q8_0.gguf | Qwen3 causal LM | 4.2 GB |
-| acestep-v15-turbo-Q8_0.gguf | DiT + CondEncoder (24L, H=2048) | 2.4 GB |
+| acestep-v15-turbo-Q8_0.gguf | DiT 2B + CondEncoder (24L, H=2048) | 2.4 GB |
 | vae-BF16.gguf | AutoencoderOobleck | 322 MB |
 
 Three LM sizes: 0.6B (fast), 1.7B, 4B (best quality).
+Six DiT variants: turbo, sft, base, turbo-shift1, turbo-shift3, turbo-continuous.
+XL (4B DiT) variants: xl-turbo, xl-sft, xl-base (32L, H=2560, higher quality, ~9.5 GB BF16).
 VAE is always BF16 (small, bandwidth-bound, quality-critical).
 
 <details>
@@ -831,7 +833,7 @@ default AceRequest (source of truth for webui dropdowns and placeholders):
   "models": {
     "lm": ["acestep-5Hz-lm-0.6B-Q8_0.gguf", "acestep-5Hz-lm-4B-Q8_0.gguf"],
     "embedding": ["Qwen3-Embedding-0.6B-Q8_0.gguf"],
-    "dit": ["acestep-v15-turbo-Q8_0.gguf", "acestep-v15-base-Q8_0.gguf"],
+    "dit": ["acestep-v15-turbo-Q8_0.gguf", "acestep-v15-xl-turbo-Q8_0.gguf", "acestep-v15-base-Q8_0.gguf"],
     "vae": ["vae-BF16.gguf"]
   },
   "loras": [],
@@ -1000,7 +1002,7 @@ ace-synth
   CondEncoder (lyric 8L + timbre 4L + text_proj)
   FSQ detokenizer (audio codes -> flow matching source latents)
   LoRA merge (optional: safetensors delta -> dequant/merge/requant at load)
-  DiT (24L flow matching, ODE Euler or SDE Stochastic)
+  DiT (2B: 24L H=2048, XL: 32L H=2560, flow matching ODE Euler or SDE Stochastic)
   VAE (AutoencoderOobleck, tiled decode)
   WAV stereo 48kHz
 
