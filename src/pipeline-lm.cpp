@@ -39,7 +39,7 @@ static std::vector<std::string> generate_phase1_batch(Qwen3LM *                m
                                                       float                    temperature,
                                                       float                    top_p,
                                                       int                      top_k,
-                                                      long long                base_seed,
+                                                      uint32_t                 base_seed,
                                                       int                      N,
                                                       MetadataFSM *            fsm_template,
                                                       bool                     lyrics_mode,
@@ -95,7 +95,7 @@ static std::vector<std::string> generate_phase1_batch(Qwen3LM *                m
 
     // Sample first token from shared prefill logits
     for (int i = 0; i < N; i++) {
-        seqs[i].rng.seed((uint32_t) (base_seed + i));
+        seqs[i].rng.seed(base_seed + i);
         if (fsm_template) {
             seqs[i].fsm = *fsm_template;
         }
@@ -254,7 +254,7 @@ static std::vector<std::string> generate_phase1_batch(Qwen3LM *                m
     std::vector<std::string> results(N);
     for (int i = 0; i < N; i++) {
         results[i] = bpe_decode(*bpe, seqs[i].gen_tokens);
-        fprintf(stderr, "[LM-Phase1 Batch%d] seed=%lld, %zu tokens\n", i, base_seed + i, seqs[i].gen_tokens.size());
+        fprintf(stderr, "[LM-Phase1 Batch%d] seed=%u, %zu tokens\n", i, base_seed + i, seqs[i].gen_tokens.size());
     }
     return results;
 }
@@ -269,7 +269,7 @@ static std::vector<std::string> run_phase2_batch(Qwen3LM *                      
                                                  float                          temperature,
                                                  float                          top_p,
                                                  int                            top_k,
-                                                 long long                      base_seed,
+                                                 uint32_t                       base_seed,
                                                  int                            N,
                                                  float                          cfg_scale,
                                                  const char *                   negative_prompt,
@@ -298,7 +298,7 @@ static std::vector<std::string> run_phase2_batch(Qwen3LM *                      
             max_tokens = mt;
         }
     }
-    fprintf(stderr, "[LM-Phase2] max_tokens: %d, CFG: %.2f, seeds: %lld..%lld\n", max_tokens, cfg_scale, base_seed,
+    fprintf(stderr, "[LM-Phase2] max_tokens: %d, CFG: %.2f, seeds: %u..%u\n", max_tokens, cfg_scale, base_seed,
             base_seed + N - 1);
 
     // Reset all KV sets: cond [0..N-1], uncond [N..2N-1]
@@ -360,7 +360,7 @@ static std::vector<std::string> run_phase2_batch(Qwen3LM *                      
 
     // Sample first token from per-element prefill logits (N different seeds)
     for (int i = 0; i < N; i++) {
-        seqs[i].rng.seed((uint32_t) (base_seed + i));
+        seqs[i].rng.seed(base_seed + i);
         seqs[i].done = false;
 
         std::vector<float> lg(prefill_logits_vec[i]);  // copy
@@ -534,7 +534,7 @@ static std::vector<std::string> run_phase2_batch(Qwen3LM *                      
     std::vector<std::string> results(N);
     for (int i = 0; i < N; i++) {
         results[i] = codes_to_string(seqs[i].audio_codes);
-        fprintf(stderr, "[LM-Phase2 Batch%d] seed=%lld, %zu codes\n", i, base_seed + i, seqs[i].audio_codes.size());
+        fprintf(stderr, "[LM-Phase2 Batch%d] seed=%u, %zu codes\n", i, base_seed + i, seqs[i].audio_codes.size());
     }
     return results;
 }
