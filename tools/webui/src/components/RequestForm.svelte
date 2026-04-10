@@ -145,7 +145,11 @@
 			const blob = new Blob([await file.arrayBuffer()], {
 				type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
 			});
-			const result = await understandAudio(blob);
+			const result = await understandAudio(
+				blob,
+				app.request.lm_model as string,
+				app.request.synth_model as string
+			);
 
 			setRequest(result);
 			app.pendingRequests = [];
@@ -404,10 +408,19 @@
 					: await synthGenerate(toSend, app.format);
 			const now = Date.now();
 			const baseName = app.name || 'Untitled';
+
+			// extract DiT variant from model filename
+			// "acestep-v15-xl-turbo-Q8_0.gguf" -> "xl-turbo"
+			const model = String(app.request.synth_model || '');
+			const vm = model.match(/^acestep-v15-(.+?)-(Q\d.*|BF16)\.gguf$/);
+			const variant = vm ? vm[1] : '';
+
 			for (let i = blobs.length - 1; i >= 0; i--) {
 				const r = expanded[i];
+				const task = r.task_type || 'text2music';
+				const parts = [baseName, variant, task].filter((s) => s);
 				const song = {
-					name: baseName,
+					name: parts.join(' '),
 					format: app.format,
 					created: now + i,
 					caption: r.caption,

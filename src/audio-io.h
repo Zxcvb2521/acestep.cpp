@@ -5,6 +5,7 @@
 // All functions use planar stereo float: [L: T samples][R: T samples].
 // Part of acestep.cpp. MIT license.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -83,8 +84,12 @@ static uint8_t * audio_io_load_file(const char * path, size_t * size_out) {
         fclose(fp);
         return NULL;
     }
-    fread(buf, 1, (size_t) fsize, fp);
+    size_t nr = fread(buf, 1, (size_t) fsize, fp);
     fclose(fp);
+    if (nr != (size_t) fsize) {
+        free(buf);
+        return NULL;
+    }
 
     *size_out = (size_t) fsize;
     return buf;
@@ -290,21 +295,42 @@ static float * audio_read_48k(const char * path, int * T_out) {
     return resampled;
 }
 
-// peak normalize stereo audio to 0 dBFS in-place.
-// n_total = number of float samples (both channels, so T_audio * 2 for stereo).
+// maximize perceived loudness via 99.5th percentile normalization.
+// finds the amplitude at the 99.5th percentile, scales so that value
+// reaches 1.0, then hard clips the rare outlier peaks above 1.0.
+// result: the body of the signal is as loud as possible, only the
+// top 0.5% of samples (transient spikes) get clipped.
+// n_total = number of float samples (both channels combined).
 static void audio_normalize(float * audio, int n_total) {
-    float peak = 0.0f;
-    for (int i = 0; i < n_total; i++) {
-        float a = audio[i] < 0.0f ? -audio[i] : audio[i];
-        if (a > peak) {
-            peak = a;
-        }
+    if (n_total <= 0) {
+        return;
     }
-    if (peak > 1e-8f && peak != 1.0f) {
-        float gain = 1.0f / peak;
-        for (int i = 0; i < n_total; i++) {
-            audio[i] *= gain;
+
+    // collect absolute values
+    std::vector<float> absvals((size_t) n_total);
+    for (int i = 0; i < n_total; i++) {
+        absvals[i] = audio[i] < 0.0f ? -audio[i] : audio[i];
+    }
+
+    // partial sort to find the 99.5th percentile
+    size_t idx995 = (size_t) ((double) (n_total - 1) * 0.995);
+    std::nth_element(absvals.begin(), absvals.begin() + idx995, absvals.end());
+    float p995 = absvals[idx995];
+
+    if (p995 < 1e-6f) {
+        return;
+    }
+
+    // scale so the 99.5th percentile hits 1.0, hard clip the rest
+    float gain = 1.0f / p995;
+    for (int i = 0; i < n_total; i++) {
+        float v = audio[i] * gain;
+        if (v > 1.0f) {
+            v = 1.0f;
+        } else if (v < -1.0f) {
+            v = -1.0f;
         }
+        audio[i] = v;
     }
 }
 

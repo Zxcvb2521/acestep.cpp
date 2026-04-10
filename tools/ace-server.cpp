@@ -140,6 +140,7 @@ static std::string g_loaded_lm;
 static std::string g_loaded_dit;
 static std::string g_loaded_lora;
 static float       g_loaded_lora_scale = 1.0f;
+static std::string g_loaded_und_dit;
 
 // pipeline params (rebuilt from registry paths on each load)
 static AceLmParams         g_lm_params;
@@ -371,7 +372,7 @@ static void parse_server_fields(const char * json, ServerFields * sf) {
     yyjson_doc_free(doc);
 }
 
-// load LM + understand. frees previous contexts first.
+// load LM. frees understand (shared pointers become invalid) but does not rebuild it.
 // returns false on failure (caller returns 500).
 static bool ensure_lm(const std::string & name) {
     if (g_ctx_lm && g_loaded_lm == name) {
@@ -384,9 +385,10 @@ static bool ensure_lm(const std::string & name) {
         return false;
     }
 
-    // unload old
+    // understand holds shared LM pointers, free before LM reload
     ace_understand_free(g_ctx_understand);
     g_ctx_understand = nullptr;
+    g_loaded_und_dit.clear();
     ace_lm_free(g_ctx_lm);
     g_ctx_lm = nullptr;
 
@@ -400,19 +402,42 @@ static bool ensure_lm(const std::string & name) {
         return false;
     }
 
-    // rebuild understand with shared LM
+    g_loaded_lm = name;
+    return true;
+}
+
+// load understand pipeline (LM + tokenizer from DiT).
+// reloads when LM or DiT changes. tokenizer weights differ between DiT variants.
+static bool ensure_understand(const std::string & lm_name, const std::string & dit_name) {
+    if (!ensure_lm(lm_name)) {
+        return false;
+    }
+
+    // already loaded with the same DiT tokenizer
+    if (g_ctx_understand && g_loaded_und_dit == dit_name) {
+        return true;
+    }
+
+    // update dit_path for the tokenizer
+    const ModelEntry * dit = registry_find(g_registry.dit, dit_name.c_str());
+    if (dit) {
+        g_und_params.dit_path = dit->path.c_str();
+    }
+
+    // (re)build understand with shared LM
+    ace_understand_free(g_ctx_understand);
+    g_ctx_understand = nullptr;
+
     g_und_params.shared_model = ace_lm_get_model(g_ctx_lm);
     g_und_params.shared_bpe   = ace_lm_get_bpe(g_ctx_lm);
     g_ctx_understand          = ace_understand_load(&g_und_params);
     if (!g_ctx_understand) {
         fprintf(stderr, "[Server] FATAL: understand load failed\n");
-        ace_lm_free(g_ctx_lm);
-        g_ctx_lm = nullptr;
-        g_loaded_lm.clear();
+        g_loaded_und_dit.clear();
         return false;
     }
 
-    g_loaded_lm = name;
+    g_loaded_und_dit = dit_name;
     return true;
 }
 
@@ -552,6 +577,7 @@ static void handle_lm(const httplib::Request & req, httplib::Response & res) {
         ace_lm_free(g_ctx_lm);
         g_ctx_lm = nullptr;
         g_loaded_lm.clear();
+        g_loaded_und_dit.clear();
     }
     lock.unlock();
 
@@ -836,18 +862,24 @@ static void handle_understand(const httplib::Request & req, httplib::Response & 
     ace_req.lm_temperature = 0.3f;  // understand default: lower than generation
     ace_req.lm_top_p       = 1.0f;  // understand default: no nucleus sampling
 
-    float * src_interleaved = nullptr;
-    int     src_len         = 0;
+    // parse server fields + request
+    ServerFields sf;
+    float *      src_interleaved = nullptr;
+    int          src_len         = 0;
 
     if (req.is_multipart_form_data()) {
         // multipart: required "audio" part, optional "request" part for sampling params
         if (req.form.has_file("request")) {
-            if (!request_parse_json(&ace_req, req.form.get_file("request").content.c_str())) {
+            const std::string & json = req.form.get_file("request").content;
+            parse_server_fields(json.c_str(), &sf);
+            if (!request_parse_json(&ace_req, json.c_str())) {
                 json_error(res, 400, "Multipart: invalid JSON in 'request' part");
                 return;
             }
         } else if (req.form.has_field("request")) {
-            if (!request_parse_json(&ace_req, req.form.get_field("request").c_str())) {
+            const std::string & json = req.form.get_field("request");
+            parse_server_fields(json.c_str(), &sf);
+            if (!request_parse_json(&ace_req, json.c_str())) {
                 json_error(res, 400, "Multipart: invalid JSON in 'request' part");
                 return;
             }
@@ -879,6 +911,7 @@ static void handle_understand(const httplib::Request & req, httplib::Response & 
         src_len = T_audio;
     } else {
         // plain JSON body: codes-only mode
+        parse_server_fields(req.body.c_str(), &sf);
         if (!request_parse_json(&ace_req, req.body.c_str())) {
             json_error(res, 400, "Invalid JSON");
             return;
@@ -893,11 +926,12 @@ static void handle_understand(const httplib::Request & req, httplib::Response & 
         return;
     }
 
-    // load
-    std::string lm_name = resolve_name(g_registry.lm, "", g_loaded_lm);
-    if (!ensure_lm(lm_name)) {
+    // load (LM + tokenizer from selected DiT)
+    std::string lm_name  = resolve_name(g_registry.lm, sf.lm_model, g_loaded_lm);
+    std::string dit_name = resolve_name(g_registry.dit, sf.synth_model, g_loaded_dit);
+    if (!ensure_understand(lm_name, dit_name)) {
         free(src_interleaved);
-        json_error(res, 500, "Failed to load LM");
+        json_error(res, 500, "Failed to load understand pipeline");
         return;
     }
 
@@ -912,6 +946,7 @@ static void handle_understand(const httplib::Request & req, httplib::Response & 
         ace_lm_free(g_ctx_lm);
         g_ctx_lm = nullptr;
         g_loaded_lm.clear();
+        g_loaded_und_dit.clear();
     }
     lock.unlock();
     free(src_interleaved);
@@ -1023,6 +1058,7 @@ static void usage(const char * prog) {
             "Server:\n"
             "  --host <addr>           Listen address (default: 127.0.0.1)\n"
             "  --port <N>              Listen port (default: 8080)\n"
+            "  --timeout <sec>         HTTP timeout in seconds (default: 30)\n"
             "  --max-batch <N>         LM batch limit (default: 1)\n"
             "  --max-seq <N>           KV cache size (default: 8192)\n"
             "\n"
@@ -1040,6 +1076,7 @@ int main(int argc, char ** argv) {
 
     const char * host       = "127.0.0.1";
     int          port       = 8080;
+    int          timeout    = 30;
     const char * models_dir = nullptr;
     const char * loras_dir  = nullptr;
 
@@ -1073,6 +1110,8 @@ int main(int argc, char ** argv) {
             host = argv[++i];
         } else if (!strcmp(argv[i], "--port") && i + 1 < argc) {
             port = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) {
+            timeout = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--max-batch") && i + 1 < argc) {
             g_max_batch = atoi(argv[++i]);
 
@@ -1158,12 +1197,11 @@ int main(int argc, char ** argv) {
     }
     g_lm_params.max_batch = g_max_batch;
 
-    // init understand params (dit/vae for audio encoding, independent of synth pipeline)
+    // init understand params (vae for audio encoding, dit resolved per-request)
     ace_understand_default_params(&g_und_params);
     g_und_params.use_fa  = g_lm_params.use_fa;
     g_und_params.use_fsm = g_lm_params.use_fsm;
-    if (have_dit && have_vae) {
-        g_und_params.dit_path = g_registry.dit[0].path.c_str();
+    if (have_vae) {
         g_und_params.vae_path = g_registry.vae[0].path.c_str();
     }
 
@@ -1172,6 +1210,10 @@ int main(int argc, char ** argv) {
     // setup HTTP server
     httplib::Server svr;
     g_svr = &svr;
+
+    // httplib defaults to 5s which kills slow mobile/proxy connections
+    svr.set_read_timeout(timeout);
+    svr.set_write_timeout(timeout);
 
     // SO_REUSEADDR: allow rebind after TIME_WAIT (normal restart).
     // no SO_REUSEPORT: fail if another process is actively listening.
