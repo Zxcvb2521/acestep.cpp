@@ -1374,7 +1374,8 @@ int main(int argc, char ** argv) {
     httplib::Server svr;
     g_svr = &svr;
 
-    // httplib defaults to 5s which kills long generation requests.
+    // per-operation socket idle timeout (httplib default is 5s).
+    // generous margin for slow networks and large audio transfers.
     svr.set_read_timeout(600);
     svr.set_write_timeout(600);
 
