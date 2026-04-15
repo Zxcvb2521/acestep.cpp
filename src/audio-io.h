@@ -474,14 +474,9 @@ static void wav_write_header_extensible_s24(char *& p, int T_audio, int sr, int 
     wav_write_u32le(p, 0x00000001u);
     wav_write_u16le(p, 0x0000u);
     wav_write_u16le(p, 0x0010u);
-    *p++ = (char) 0x80;
-    *p++ = (char) 0x00;
-    *p++ = (char) 0x00;
-    *p++ = (char) 0xAA;
-    *p++ = (char) 0x00;
-    *p++ = (char) 0x38;
-    *p++ = (char) 0x9B;
-    *p++ = (char) 0x71;
+    static const unsigned char guid_tail[] = { 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
+    memcpy(p, guid_tail, 8);
+    p += 8;
 
     memcpy(p, "data", 4);
     p += 4;
