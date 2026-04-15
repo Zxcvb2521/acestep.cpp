@@ -737,6 +737,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
                          float *                 ref_interleaved,
                          int                     ref_len,
                          bool                    output_wav,
+                         WavFormat               wav_fmt,
                          int                     peak_clip) {
     // expand synth_batch_size and process per-request groups.
     // each original request = one pipeline call (same codes = same T).
@@ -836,9 +837,11 @@ static void synth_worker(std::shared_ptr<Job>    job,
         if (!audio[b].samples) {
             continue;
         }
-        audio_normalize(audio[b].samples, audio[b].n_samples * 2, peak_clip);
+        if (!output_wav || wav_fmt != WAV_F32) {
+            audio_normalize(audio[b].samples, audio[b].n_samples * 2, peak_clip);
+        }
         if (output_wav) {
-            encoded[b] = audio_encode_wav(audio[b].samples, audio[b].n_samples, 48000);
+            encoded[b] = audio_encode_wav(audio[b].samples, audio[b].n_samples, 48000, wav_fmt);
         } else {
             encoded[b] = audio_encode_mp3(audio[b].samples, audio[b].n_samples, 48000, g_mp3_kbps, server_cancel_job,
                                           (void *) &job->cancel);
@@ -872,7 +875,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
     fprintf(stderr, "[Server] Job %s done (%d tracks)\n", job->id.c_str(), total_tracks);
 }
 
-// POST /synth[?wav=1]
+// POST /synth[?format=wav16|wav24|wav32]
 // returns JSON {"id":"N"} immediately.
 // input:
 //   application/json body        -> single request {} or batch [{req0}, {req1}, ...]
@@ -880,7 +883,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
 //     part "request":   JSON text
 //     part "audio":     source audio (WAV or MP3)
 //     part "ref_audio": timbre reference audio (WAV or MP3), optional
-// output: audio/mpeg (default) or audio/wav (?wav=1)
+// output: audio/mpeg (default) or audio/wav (?format=wav16|wav24|wav32)
 //   batch == 1: raw audio body
 //   batch >  1: multipart/mixed, each part is raw audio
 // Batch size = number of JSON objects (after synth_batch_size expansion, clamped to 9).
@@ -974,17 +977,24 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
         return;
     }
 
-    // output format: ?wav=1 for WAV, default MP3
-    bool output_wav = req.has_param("wav") && req.get_param_value("wav") == "1";
-    int  peak_clip  = ace_reqs[0].peak_clip;
+    // output format: ?format=wav16|wav24|wav32 for WAV, default MP3
+    bool      output_wav = false;
+    WavFormat wav_fmt    = WAV_S16;
+    if (req.has_param("format")) {
+        bool is_mp3 = true;
+        if (audio_parse_format(req.get_param_value("format").c_str(), is_mp3, wav_fmt)) {
+            output_wav = !is_mp3;
+        }
+    }
+    int peak_clip = ace_reqs[0].peak_clip;
 
     // create job, spawn worker, return ID
     auto job = job_create();
     fprintf(stderr, "[Server] Job %s created (%d requests)\n", job->id.c_str(), (int) ace_reqs.size());
 
     work_push([job, reqs = std::move(ace_reqs), sf, src_interleaved, src_len, ref_interleaved, ref_len, output_wav,
-               peak_clip]() mutable {
-        synth_worker(job, std::move(reqs), sf, src_interleaved, src_len, ref_interleaved, ref_len, output_wav,
+               wav_fmt, peak_clip]() mutable {
+        synth_worker(job, std::move(reqs), sf, src_interleaved, src_len, ref_interleaved, ref_len, output_wav, wav_fmt,
                      peak_clip);
     });
 

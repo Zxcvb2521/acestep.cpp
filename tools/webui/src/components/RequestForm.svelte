@@ -875,11 +875,21 @@
 			bind:value={app.request.peak_clip}
 			title="Percentile peak normalization to 0 dB. 0 = no clipping (100th percentile). 10 = default (99.999%, clips ~58 samples / 1.2 ms). 999 = aggressive (99.9%, clips ~5760 samples / 120 ms)."
 		/>
+	</div>
+
+	<div class="model-row">
+		<span class="model-label">Out</span>
 		<label class="radio-label">
 			<input type="radio" name="format" value="mp3" bind:group={app.format} /> MP3
 		</label>
 		<label class="radio-label">
-			<input type="radio" name="format" value="wav" bind:group={app.format} /> WAV
+			<input type="radio" name="format" value="wav16" bind:group={app.format} /> WAV16
+		</label>
+		<label class="radio-label">
+			<input type="radio" name="format" value="wav24" bind:group={app.format} /> WAV24
+		</label>
+		<label class="radio-label">
+			<input type="radio" name="format" value="wav32" bind:group={app.format} /> WAV32 (raw float)
 		</label>
 	</div>
 

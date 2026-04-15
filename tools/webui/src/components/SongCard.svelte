@@ -106,7 +106,7 @@
 		const a = document.createElement('a');
 		a.href = url;
 		const safe = song.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '') || 'song';
-		const ext = song.format === 'wav' ? '.wav' : '.mp3';
+		const ext = song.format.startsWith('wav') ? '.wav' : '.mp3';
 		a.download = `${safe}${ext}`;
 		a.click();
 		URL.revokeObjectURL(url);
@@ -154,6 +154,7 @@
 		</button>
 		<span class="card-name">{song.name}</span>
 		<div class="card-actions">
+			<button class="icon-btn" onclick={load} title="Edit prompt"><Pencil size={14} /> Edit</button>
 			<button class="icon-btn" onclick={downloadAudio} title="Download track"
 				><Download size={14} /> Down</button
 			>
@@ -175,7 +176,6 @@
 		<span class="format-badge">{song.format.toUpperCase()}</span>
 		<span class="timecode">{fmtPos(time)} / {fmtDur(dur)}</span>
 		<div class="card-actions">
-			<button class="icon-btn" onclick={load} title="Edit prompt"><Pencil size={14} /> Edit</button>
 			<button class="icon-btn" onclick={scan} disabled={scanning} title="Analyze audio"
 				><Ear size={14} /> Scan</button
 			>

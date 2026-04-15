@@ -41,7 +41,7 @@ export function lmSubmitFormat(req: AceRequest): Promise<string> {
 
 // POST /synth: submit synth request, returns job ID
 export function synthSubmit(reqs: AceRequest[], format: string): Promise<string> {
-	const url = format === 'wav' ? 'synth?wav=1' : 'synth';
+	const url = format !== 'mp3' ? `synth?format=${format}` : 'synth';
 	const body = reqs.length === 1 ? JSON.stringify(reqs[0]) : JSON.stringify(reqs);
 	return submitJob(url, {
 		method: 'POST',
@@ -57,7 +57,7 @@ export function synthSubmitWithAudio(
 	refAudio: Blob | null,
 	format: string
 ): Promise<string> {
-	const url = format === 'wav' ? 'synth?wav=1' : 'synth';
+	const url = format !== 'mp3' ? `synth?format=${format}` : 'synth';
 	const body = reqs.length === 1 ? JSON.stringify(reqs[0]) : JSON.stringify(reqs);
 	const form = new FormData();
 	form.append('request', new Blob([body], { type: 'application/json' }), 'request.json');
