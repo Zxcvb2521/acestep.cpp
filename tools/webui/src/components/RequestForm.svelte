@@ -515,7 +515,7 @@
 				</select>
 			</div>
 			<div class="model-row">
-				<span class="model-label">Adapter</span>
+				<span class="model-label">LoRA</span>
 				<select
 					class="model-select"
 					bind:value={app.request.adapter}
