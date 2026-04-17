@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-// Internal state shared across all ops within one ace_synth_generate call.
+// Internal state shared across all ops within one DiT phase of a job.
 // Declared here so ops functions can take it by reference.
 struct SynthState {
     // model dimensions (from ctx)

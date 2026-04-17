@@ -449,3 +449,36 @@ static void dit_ggml_free(DiTGGML * m) {
     wctx_free(&m->wctx);
     *m = {};
 }
+
+// Read DiT config from GGUF metadata without loading any tensor weights.
+// Used by the orchestrator to keep patch_size, in_channels, out_channels
+// accessible during text encoding while the DiT itself is not yet loaded.
+// Returns true on success, false on I/O or missing key.
+static bool dit_ggml_load_config(DiTGGMLConfig * cfg, const char * gguf_path) {
+    GGUFModel gf;
+    if (!gf_load(&gf, gguf_path)) {
+        fprintf(stderr, "[Load] FATAL: cannot load %s\n", gguf_path);
+        return false;
+    }
+    cfg->n_layers          = (int) gf_get_u32(gf, "acestep-dit.block_count");
+    cfg->hidden_size       = (int) gf_get_u32(gf, "acestep-dit.embedding_length");
+    cfg->intermediate_size = (int) gf_get_u32(gf, "acestep-dit.feed_forward_length");
+    cfg->n_heads           = (int) gf_get_u32(gf, "acestep-dit.attention.head_count");
+    cfg->n_kv_heads        = (int) gf_get_u32(gf, "acestep-dit.attention.head_count_kv");
+    cfg->head_dim          = (int) gf_get_u32(gf, "acestep-dit.attention.key_length");
+    cfg->in_channels       = (int) gf_get_u32(gf, "acestep.in_channels");
+    cfg->out_channels      = (int) gf_get_u32(gf, "acestep.audio_acoustic_hidden_dim");
+    cfg->patch_size        = (int) gf_get_u32(gf, "acestep.patch_size");
+    cfg->sliding_window    = (int) gf_get_u32(gf, "acestep.sliding_window");
+    cfg->rope_theta        = gf_get_f32(gf, "acestep-dit.rope.freq_base");
+    cfg->rms_norm_eps      = gf_get_f32(gf, "acestep-dit.attention.layer_norm_rms_epsilon");
+    gf_close(&gf);
+
+    if (!cfg->n_layers || !cfg->hidden_size || !cfg->intermediate_size || !cfg->n_heads || !cfg->n_kv_heads ||
+        !cfg->head_dim || !cfg->in_channels || !cfg->out_channels || !cfg->patch_size || !cfg->sliding_window ||
+        cfg->rope_theta <= 0.0f || cfg->rms_norm_eps <= 0.0f) {
+        fprintf(stderr, "[Load] FATAL: incomplete DiT config in %s\n", gguf_path);
+        return false;
+    }
+    return true;
+}

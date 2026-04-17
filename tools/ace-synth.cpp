@@ -232,13 +232,35 @@ int main(int argc, char ** argv) {
     }
     fprintf(stderr, "[Ace-Synth] Batch: %d request(s)\n", batch_n);
 
+    // Expand synth_batch_size and process per-request groups in two phases.
     // process each request as a separate group (same codes = same T per group).
     // synth_batch_size variations within a group share the same T -> true GPU batch.
     // different requests can have different T -> separate pipeline calls.
-    std::vector<AceAudio>    all_audio;
-    std::vector<std::string> all_basenames;
-    std::vector<int>         all_synth_indices;
+    // Phase 1: DiT resident, iterate all groups -> jobs[] carry the latents.
+    // Phase 2: unload DiT, load VAE, iterate jobs[] with the largest tiles.
+    // This avoids reloading the DiT between groups and keeps VAE decoding tile
+    // size unconstrained by residual DiT VRAM.
+    int total_alloc = 0;
+    for (int ri = 0; ri < batch_n; ri++) {
+        int sbs = reqs[ri].synth_batch_size;
+        total_alloc += sbs < 1 ? 1 : (sbs > 9 ? 9 : sbs);
+    }
+    std::vector<AceAudio>    all_audio(total_alloc);
+    std::vector<std::string> all_basenames(total_alloc);
+    std::vector<int>         all_synth_indices(total_alloc);
 
+    // Phase 1: DiT
+    std::vector<AceSynthJob *> jobs(batch_n, nullptr);
+    std::vector<int>           audio_off(batch_n, 0);
+
+    if (!ace_synth_dit_load(ctx)) {
+        ace_synth_free(ctx);
+        free(src_interleaved);
+        free(ref_interleaved);
+        return 1;
+    }
+
+    int off = 0;
     for (int ri = 0; ri < batch_n; ri++) {
         int sbs = reqs[ri].synth_batch_size;
         if (sbs < 1) {
@@ -260,28 +282,61 @@ int main(int argc, char ** argv) {
             fprintf(stderr, "[Ace-Synth] Group %d: %d track(s)\n", ri, sbs);
         }
 
-        std::vector<AceAudio> group_audio(sbs);
-        if (ace_synth_generate(ctx, group.data(), src_interleaved, src_len, ref_interleaved, ref_len, sbs,
-                               group_audio.data()) != 0) {
-            fprintf(stderr, "[Ace-Synth] ERROR: generation failed for group %d\n", ri);
-            for (auto & a : all_audio) {
-                ace_audio_free(&a);
+        jobs[ri] = ace_synth_job_run_dit(ctx, group.data(), src_interleaved, src_len, ref_interleaved, ref_len, sbs);
+        if (!jobs[ri]) {
+            fprintf(stderr, "[Ace-Synth] ERROR: DiT phase failed for group %d\n", ri);
+            for (int j = 0; j < ri; j++) {
+                ace_synth_job_free(jobs[j]);
             }
-            for (auto & a : group_audio) {
-                ace_audio_free(&a);
-            }
+            ace_synth_dit_unload(ctx);
             free(src_interleaved);
             free(ref_interleaved);
             ace_synth_free(ctx);
             return 1;
         }
 
+        audio_off[ri] = off;
         for (int i = 0; i < sbs; i++) {
-            all_audio.push_back(group_audio[i]);
-            all_basenames.push_back(basenames[ri]);
-            all_synth_indices.push_back(i);
+            all_basenames[off + i]     = basenames[ri];
+            all_synth_indices[off + i] = i;
         }
+        off += sbs;
     }
+
+    // DiT out, VAE in. VAE sees the full VRAM budget for wider tiles.
+    ace_synth_dit_unload(ctx);
+    if (!ace_synth_vae_load(ctx)) {
+        fprintf(stderr, "[Ace-Synth] ERROR: VAE load failed\n");
+        for (int j = 0; j < batch_n; j++) {
+            ace_synth_job_free(jobs[j]);
+        }
+        free(src_interleaved);
+        free(ref_interleaved);
+        ace_synth_free(ctx);
+        return 1;
+    }
+
+    // Phase 2: VAE decode + splice for every job.
+    for (int ri = 0; ri < batch_n; ri++) {
+        int rc = ace_synth_job_run_vae(ctx, jobs[ri], src_interleaved, src_len, all_audio.data() + audio_off[ri]);
+        if (rc != 0) {
+            fprintf(stderr, "[Ace-Synth] ERROR: VAE phase failed for group %d\n", ri);
+            for (int j = 0; j < batch_n; j++) {
+                ace_synth_job_free(jobs[j]);
+            }
+            for (auto & a : all_audio) {
+                ace_audio_free(&a);
+            }
+            ace_synth_vae_unload(ctx);
+            free(src_interleaved);
+            free(ref_interleaved);
+            ace_synth_free(ctx);
+            return 1;
+        }
+        ace_synth_job_free(jobs[ri]);
+    }
+
+    ace_synth_vae_unload(ctx);
 
     // Write output files
     for (int b = 0; b < (int) all_audio.size(); b++) {

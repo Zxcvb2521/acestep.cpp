@@ -1,6 +1,10 @@
 // pipeline-synth.cpp: ACE-Step synthesis pipeline implementation
 //
-// Wraps DiT + TextEncoder + CondEncoder + VAE for audio generation.
+// Resident modules loaded at init: TextEnc, CondEnc, FSQ tok, FSQ detok, BPE.
+// DiT and VAE decoder are loaded on demand via explicit phase calls.
+// Phase 1 (DiT) and phase 2 (VAE) run on independent jobs so the caller can
+// batch many jobs through the DiT while it is resident, unload it, then feed
+// the latents to the VAE decoder with the largest tiles the GPU can hold.
 
 #include "pipeline-synth.h"
 
@@ -44,6 +48,59 @@ void ace_synth_default_params(AceSynthParams * p) {
     p->dump_dir          = NULL;
 }
 
+// Read silence_latent, null_condition_emb and is_turbo from the DiT GGUF
+// without touching the big tensors. Called once at ace_synth_load.
+// Returns false on any missing metadata or tensor read error.
+static bool load_dit_cpu_side(AceSynth * ctx, const char * dit_path) {
+    GGUFModel gf = {};
+    if (!gf_load(&gf, dit_path)) {
+        fprintf(stderr, "[Synth-Load] FATAL: cannot reopen %s for metadata\n", dit_path);
+        return false;
+    }
+
+    ctx->is_turbo = gf_get_bool(gf, "acestep.is_turbo");
+
+    // silence_latent: [15000, 64] f32 needed by FSQ tokenizer padding and by
+    // repaint src buffer construction when T extends past the source coverage.
+    const void * sl_data = gf_get_data(gf, "silence_latent");
+    if (!sl_data) {
+        fprintf(stderr, "[Synth-Load] FATAL: silence_latent not found in %s\n", dit_path);
+        gf_close(&gf);
+        return false;
+    }
+    ctx->silence_full.resize(15000 * 64);
+    memcpy(ctx->silence_full.data(), sl_data, 15000 * 64 * sizeof(float));
+    fprintf(stderr, "[Synth-Load] silence_latent: [15000, 64] from GGUF\n");
+
+    // null_condition_emb: [H_cond] BF16 or F32. Absent on some trained variants.
+    // Used by ops_encode_text to pad shorter encodings up to max_enc_S.
+    struct ggml_tensor * nce_meta = ggml_get_tensor(gf.meta, "null_condition_emb");
+    if (nce_meta) {
+        int          emb_n = (int) ggml_nelements(nce_meta);
+        const void * raw   = gf_get_data(gf, "null_condition_emb");
+        ctx->null_cond_cpu.resize(emb_n);
+        if (nce_meta->type == GGML_TYPE_BF16) {
+            const uint16_t * s = (const uint16_t *) raw;
+            for (int i = 0; i < emb_n; i++) {
+                uint32_t w = (uint32_t) s[i] << 16;
+                memcpy(&ctx->null_cond_cpu[i], &w, 4);
+            }
+        } else if (nce_meta->type == GGML_TYPE_F32) {
+            memcpy(ctx->null_cond_cpu.data(), raw, emb_n * sizeof(float));
+        } else {
+            fprintf(stderr, "[Synth-Load] FATAL: null_condition_emb unexpected type %d\n", nce_meta->type);
+            gf_close(&gf);
+            return false;
+        }
+        fprintf(stderr, "[Synth-Load] null_condition_emb: [%d] cached (CFG available)\n", emb_n);
+    } else {
+        ctx->null_cond_cpu.clear();
+    }
+
+    gf_close(&gf);
+    return true;
+}
+
 AceSynth * ace_synth_load(const AceSynthParams * params) {
     if (!params->dit_path) {
         fprintf(stderr, "[Ace-Synth] ERROR: dit_path is NULL\n");
@@ -56,81 +113,37 @@ AceSynth * ace_synth_load(const AceSynthParams * params) {
 
     AceSynth * ctx  = new AceSynth();
     ctx->params     = *params;
+    ctx->have_dit   = false;
     ctx->have_vae   = false;
     ctx->have_detok = false;
     ctx->have_tok   = false;
 
     Timer timer;
 
-    // Load DiT model (once for all requests)
-    ctx->dit = {};
-    dit_ggml_init_backend(&ctx->dit);
-    if (!params->use_fa) {
-        ctx->dit.use_flash_attn = false;
-    }
-    fprintf(stderr, "[Synth-Load] Backend init: %.1f ms\n", timer.ms());
-
-    timer.reset();
-    if (!dit_ggml_load(&ctx->dit, params->dit_path, params->adapter_path, params->adapter_scale)) {
-        fprintf(stderr, "[Synth-Load] FATAL: DiT load failed\n");
+    // Cache DiT metadata (config + silence + null_cond + is_turbo) from the GGUF.
+    // No tensor weights touched, no GPU buffer allocated for the DiT yet.
+    if (!dit_ggml_load_config(&ctx->dit_cfg, params->dit_path)) {
         delete ctx;
         return NULL;
     }
-    fprintf(stderr, "[Synth-Load] DiT weight load: %.1f ms\n", timer.ms());
-
-    ctx->Oc     = ctx->dit.cfg.out_channels;           // 64
-    ctx->ctx_ch = ctx->dit.cfg.in_channels - ctx->Oc;  // 128
-
-    // Read DiT GGUF metadata + silence_latent tensor (once)
-    ctx->is_turbo = false;
-    {
-        GGUFModel gf = {};
-        if (gf_load(&gf, params->dit_path)) {
-            ctx->is_turbo        = gf_get_bool(gf, "acestep.is_turbo");
-            const void * sl_data = gf_get_data(gf, "silence_latent");
-            if (sl_data) {
-                ctx->silence_full.resize(15000 * 64);
-                memcpy(ctx->silence_full.data(), sl_data, 15000 * 64 * sizeof(float));
-                fprintf(stderr, "[Synth-Load] silence_latent: [15000, 64] from GGUF\n");
-            } else {
-                fprintf(stderr, "[Synth-Load] FATAL: silence_latent not found in %s\n", params->dit_path);
-                gf_close(&gf);
-                dit_ggml_free(&ctx->dit);
-                delete ctx;
-                return NULL;
-            }
-            gf_close(&gf);
-        } else {
-            fprintf(stderr, "[Synth-Load] FATAL: cannot reopen %s for metadata\n", params->dit_path);
-            dit_ggml_free(&ctx->dit);
-            delete ctx;
-            return NULL;
-        }
+    if (!load_dit_cpu_side(ctx, params->dit_path)) {
+        delete ctx;
+        return NULL;
     }
 
-    // Load VAE model (once for all requests)
-    ctx->vae = {};
-    if (params->vae_path) {
-        timer.reset();
-        vae_ggml_load(&ctx->vae, params->vae_path);
-        fprintf(stderr, "[Synth-Load] VAE weights: %.1f ms\n", timer.ms());
-        ctx->have_vae = true;
-    }
+    ctx->Oc     = ctx->dit_cfg.out_channels;           // 64
+    ctx->ctx_ch = ctx->dit_cfg.in_channels - ctx->Oc;  // 128
 
-    // BPE tokenizer
+    // BPE tokenizer (CPU only)
     timer.reset();
     if (!load_bpe_from_gguf(&ctx->bpe, params->text_encoder_path)) {
         fprintf(stderr, "[Synth-Load] FATAL: BPE load failed from %s\n", params->text_encoder_path);
-        dit_ggml_free(&ctx->dit);
-        if (ctx->have_vae) {
-            vae_ggml_free(&ctx->vae);
-        }
         delete ctx;
         return NULL;
     }
     fprintf(stderr, "[Synth-Load] BPE tokenizer: %.1f ms\n", timer.ms());
 
-    // Text encoder forward (caption only)
+    // Text encoder (Qwen3 embedding branch)
     timer.reset();
     ctx->text_enc = {};
     qwen3_init_backend(&ctx->text_enc);
@@ -139,16 +152,12 @@ AceSynth * ace_synth_load(const AceSynthParams * params) {
     }
     if (!qwen3_load_text_encoder(&ctx->text_enc, params->text_encoder_path)) {
         fprintf(stderr, "[Synth-Load] FATAL: TextEncoder load failed\n");
-        dit_ggml_free(&ctx->dit);
-        if (ctx->have_vae) {
-            vae_ggml_free(&ctx->vae);
-        }
         delete ctx;
         return NULL;
     }
     fprintf(stderr, "[Synth-Load] TextEncoder: %.1f ms\n", timer.ms());
 
-    // Condition encoder forward
+    // Condition encoder (lyric + timbre + text projector)
     timer.reset();
     ctx->cond_enc = {};
     cond_ggml_init_backend(&ctx->cond_enc);
@@ -159,16 +168,12 @@ AceSynth * ace_synth_load(const AceSynthParams * params) {
     if (!cond_ggml_load(&ctx->cond_enc, params->dit_path)) {
         fprintf(stderr, "[Synth-Load] FATAL: CondEncoder load failed\n");
         qwen3_free(&ctx->text_enc);
-        dit_ggml_free(&ctx->dit);
-        if (ctx->have_vae) {
-            vae_ggml_free(&ctx->vae);
-        }
         delete ctx;
         return NULL;
     }
     fprintf(stderr, "[Synth-Load] ConditionEncoder: %.1f ms\n", timer.ms());
 
-    // Detokenizer (for audio_codes mode, weights in DiT GGUF)
+    // Detokenizer: weights embedded in the DiT GGUF. Required for audio_codes input.
     timer.reset();
     ctx->detok = {};
     if (detok_ggml_load(&ctx->detok, params->dit_path)) {
@@ -179,7 +184,7 @@ AceSynth * ace_synth_load(const AceSynthParams * params) {
         fprintf(stderr, "[Synth-Load] Detokenizer: %.1f ms\n", timer.ms());
     }
 
-    // Tokenizer (for FSQ roundtrip in cover mode, weights in DiT GGUF)
+    // Tokenizer: weights embedded in the DiT GGUF. Used by cover-mode FSQ roundtrip.
     timer.reset();
     ctx->tok = {};
     if (tok_ggml_load(&ctx->tok, params->dit_path)) {
@@ -190,8 +195,8 @@ AceSynth * ace_synth_load(const AceSynthParams * params) {
         fprintf(stderr, "[Synth-Load] Tokenizer: %.1f ms\n", timer.ms());
     }
 
-    fprintf(stderr, "[Ace-Synth] All models loaded, turbo=%s, fa=%s\n", ctx->is_turbo ? "yes" : "no",
-            ctx->dit.use_flash_attn ? "yes" : "no");
+    fprintf(stderr, "[Ace-Synth] Resident modules loaded, turbo=%s, DiT+VAE loaded on demand\n",
+            ctx->is_turbo ? "yes" : "no");
     if (params->clamp_fp16) {
         fprintf(stderr, "[Ace-Synth] FP16 clamp enabled\n");
     }
@@ -202,25 +207,92 @@ AceSynth * ace_synth_load(const AceSynthParams * params) {
     return ctx;
 }
 
-// ace_synth_generate: thin orchestrator
-//
-// Calls ops_ primitives in sequence. Mode routing is one if/else-if block.
-// Adding a new mode = adding one branch here.
-int ace_synth_generate(AceSynth *         ctx,
-                       const AceRequest * reqs,
-                       const float *      src_audio,
-                       int                src_len,
-                       const float *      ref_audio,
-                       int                ref_len,
-                       int                batch_n,
-                       AceAudio *         out,
-                       bool (*cancel)(void *),
-                       void * cancel_data) {
-    if (!ctx || !reqs || !out || batch_n < 1 || batch_n > 9) {
-        return -1;
+bool ace_synth_dit_load(AceSynth * ctx) {
+    if (!ctx) {
+        return false;
+    }
+    if (ctx->have_dit) {
+        return true;
     }
 
-    SynthState s;
+    Timer timer;
+    ctx->dit = {};
+    dit_ggml_init_backend(&ctx->dit);
+    if (!ctx->params.use_fa) {
+        ctx->dit.use_flash_attn = false;
+    }
+    fprintf(stderr, "[Synth-Phase] DiT backend init: %.1f ms\n", timer.ms());
+
+    timer.reset();
+    if (!dit_ggml_load(&ctx->dit, ctx->params.dit_path, ctx->params.adapter_path, ctx->params.adapter_scale)) {
+        fprintf(stderr, "[Synth-Phase] FATAL: DiT load failed\n");
+        dit_ggml_free(&ctx->dit);
+        return false;
+    }
+    fprintf(stderr, "[Synth-Phase] DiT weight load: %.1f ms (fa=%s)\n", timer.ms(),
+            ctx->dit.use_flash_attn ? "yes" : "no");
+
+    ctx->have_dit = true;
+    return true;
+}
+
+void ace_synth_dit_unload(AceSynth * ctx) {
+    if (!ctx || !ctx->have_dit) {
+        return;
+    }
+    dit_ggml_free(&ctx->dit);
+    ctx->have_dit = false;
+    fprintf(stderr, "[Synth-Phase] DiT unloaded\n");
+}
+
+bool ace_synth_vae_load(AceSynth * ctx) {
+    if (!ctx || !ctx->params.vae_path) {
+        return false;
+    }
+    if (ctx->have_vae) {
+        return true;
+    }
+    Timer timer;
+    ctx->vae = {};
+    vae_ggml_load(&ctx->vae, ctx->params.vae_path);
+    ctx->have_vae = true;
+    fprintf(stderr, "[Synth-Phase] VAE weight load: %.1f ms\n", timer.ms());
+    return true;
+}
+
+void ace_synth_vae_unload(AceSynth * ctx) {
+    if (!ctx || !ctx->have_vae) {
+        return;
+    }
+    vae_ggml_free(&ctx->vae);
+    ctx->have_vae = false;
+    fprintf(stderr, "[Synth-Phase] VAE unloaded\n");
+}
+
+// Phase 1: everything up to and including DiT generate. The produced job
+// carries the latent output, the resolved state, and any silence-padded source
+// buffer needed later by the wave splice in phase 2.
+AceSynthJob * ace_synth_job_run_dit(AceSynth *         ctx,
+                                    const AceRequest * reqs,
+                                    const float *      src_audio,
+                                    int                src_len,
+                                    const float *      ref_audio,
+                                    int                ref_len,
+                                    int                batch_n,
+                                    bool (*cancel)(void *),
+                                    void * cancel_data) {
+    if (!ctx || !reqs || batch_n < 1 || batch_n > 9) {
+        return NULL;
+    }
+    if (!ctx->have_dit) {
+        fprintf(stderr, "[Synth-Phase] FATAL: run_dit called without DiT loaded\n");
+        return NULL;
+    }
+
+    AceSynthJob * job = new AceSynthJob();
+    job->batch_n      = batch_n;
+
+    SynthState & s = job->state;
     s.Oc           = ctx->Oc;
     s.ctx_ch       = ctx->ctx_ch;
     s.left_pad_sec = 0.0f;
@@ -262,13 +334,15 @@ int ace_synth_generate(AceSynth *         ctx,
         }
     }
 
-    // VAE encode source audio (possibly padded for outpainting)
+    // VAE encode source audio (possibly padded for outpainting).
+    // ops_encode_src loads a local VAE encoder, encodes, and frees it:
+    // no VAE encoder stays resident while the DiT runs.
     if (ops_encode_src(ctx, enc_audio, enc_len, s) != 0) {
-        return -1;
+        delete job;
+        return NULL;
     }
 
-    // Shared request, mode flags, use_source_context
-    // Shared params from first request (mode, duration, DiT settings).
+    // Shared request, mode flags, use_source_context.
     // Per-batch: caption, lyrics, metadata, audio_codes, and seed come from reqs[b].
     // seed must be resolved (non-negative) before calling this function.
     s.rr                 = reqs[0];
@@ -289,10 +363,11 @@ int ace_synth_generate(AceSynth *         ctx,
 
     // Resolve DiT params (steps, guidance, shift) and scan audio codes
     if (ops_resolve_params(ctx, reqs, batch_n, s) != 0) {
-        return -1;
+        delete job;
+        return NULL;
     }
 
-    // Promote text2music to cover when codes present (Python _resolve_generate_music_task)
+    // Promote text2music to cover when codes present (Python _resolve_generate_music_task).
     // DiT was trained with the cover instruction for codes guided generation.
     if (s.task == TASK_TEXT2MUSIC && s.have_codes) {
         s.task               = std::string(TASK_COVER);
@@ -307,7 +382,8 @@ int ace_synth_generate(AceSynth *         ctx,
 
     // Resolve latent frame count T
     if (ops_resolve_T(ctx, s) != 0) {
-        return -1;
+        delete job;
+        return NULL;
     }
 
     // Resolve repaint quality params from repaint_strength.
@@ -391,7 +467,8 @@ int ace_synth_generate(AceSynth *         ctx,
         // validation: tasks that need source audio or codes
         if (s.use_source_context && !s.have_cover && !s.have_codes) {
             fprintf(stderr, "[Synth] ERROR: task '%s' requires source audio or audio codes\n", s.task.c_str());
-            return -1;
+            delete job;
+            return NULL;
         }
     }
 
@@ -409,22 +486,26 @@ int ace_synth_generate(AceSynth *         ctx,
         }
         if (s.re <= s.rs) {
             fprintf(stderr, "[Region] ERROR: end (%.1f) <= start (%.1f)\n", s.re, s.rs);
-            return -1;
+            delete job;
+            return NULL;
         }
         fprintf(stderr, "[Region] %.1fs..%.1fs (canvas=%.1fs)\n", s.rs, s.re, (float) s.T_cover * 1920.0f / 48000.0f);
     }
 
-    // Encode timbre from ref_audio (independent of task)
+    // Encode timbre from ref_audio (independent of task).
+    // ops_encode_timbre loads a local VAE encoder, encodes, and frees it.
     ops_encode_timbre(ctx, ref_audio, ref_len, s);
 
     // Per-batch text + lyric encoding (main + optional non-cover pass)
     if (ops_encode_text(ctx, reqs, batch_n, s) != 0) {
-        return -1;
+        delete job;
+        return NULL;
     }
 
     // Build DiT context [batch_n, T, ctx_ch] = src(64) | mask(64)
     if (ops_build_context(ctx, reqs, batch_n, s) != 0) {
-        return -1;
+        delete job;
+        return NULL;
     }
 
     // Silence context for audio_cover_strength switching (cover only)
@@ -433,20 +514,46 @@ int ace_synth_generate(AceSynth *         ctx,
     // Noise tensor (Philox), cover noise blend, per_S, repaint_src buffer
     ops_init_noise_and_repaint(ctx, reqs, batch_n, s);
 
-    // DiT denoising loop
+    // DiT denoising loop. Latents land in s.output and stay in job memory
+    // until phase 2 feeds them to the VAE decoder.
     if (ops_dit_generate(ctx, batch_n, s, cancel, cancel_data) != 0) {
+        delete job;
+        return NULL;
+    }
+
+    return job;
+}
+
+// Phase 2: VAE decode all batch items and apply waveform splice for
+// repaint/lego regions. Picks the padded source when the job carried one.
+int ace_synth_job_run_vae(AceSynth *    ctx,
+                          AceSynthJob * job,
+                          const float * splice_src,
+                          int           splice_len,
+                          AceAudio *    out,
+                          bool (*cancel)(void *),
+                          void * cancel_data) {
+    if (!ctx || !job || !out) {
+        return -1;
+    }
+    if (!ctx->have_vae && ctx->params.vae_path) {
+        fprintf(stderr, "[Synth-Phase] FATAL: run_vae called without VAE loaded\n");
         return -1;
     }
 
-    // VAE decode and waveform splice.
     // Outpainting: splice uses the padded source (silence at extended boundaries).
-    const float * splice_audio = s.padded_src.empty() ? src_audio : s.padded_src.data();
-    int           splice_len   = s.padded_src.empty() ? src_len : (int) (s.padded_src.size() / 2);
-    if (ops_vae_decode_and_splice(ctx, batch_n, out, s, splice_audio, splice_len, cancel, cancel_data) != 0) {
-        return -1;
-    }
+    const float * sp_audio = job->state.padded_src.empty() ? splice_src : job->state.padded_src.data();
+    int           sp_len   = job->state.padded_src.empty() ? splice_len : (int) (job->state.padded_src.size() / 2);
 
-    return 0;
+    return ops_vae_decode_and_splice(ctx, job->batch_n, out, job->state, sp_audio, sp_len, cancel, cancel_data);
+}
+
+int ace_synth_job_batch_n(const AceSynthJob * job) {
+    return job ? job->batch_n : 0;
+}
+
+void ace_synth_job_free(AceSynthJob * job) {
+    delete job;
 }
 
 void ace_audio_free(AceAudio * audio) {
@@ -461,17 +568,15 @@ void ace_synth_free(AceSynth * ctx) {
     if (!ctx) {
         return;
     }
+    ace_synth_dit_unload(ctx);
+    ace_synth_vae_unload(ctx);
     if (ctx->have_detok) {
         detok_ggml_free(&ctx->detok);
     }
     if (ctx->have_tok) {
         tok_ggml_free(&ctx->tok);
     }
-    if (ctx->have_vae) {
-        vae_ggml_free(&ctx->vae);
-    }
     cond_ggml_free(&ctx->cond_enc);
     qwen3_free(&ctx->text_enc);
-    dit_ggml_free(&ctx->dit);
     delete ctx;
 }

@@ -200,8 +200,8 @@ int ops_resolve_T(AceSynth * ctx, SynthState & s) {
     } else {
         s.T = (int) (s.duration * FRAMES_PER_SECOND);
     }
-    s.T     = ((s.T + ctx->dit.cfg.patch_size - 1) / ctx->dit.cfg.patch_size) * ctx->dit.cfg.patch_size;
-    s.S     = s.T / ctx->dit.cfg.patch_size;
+    s.T     = ((s.T + ctx->dit_cfg.patch_size - 1) / ctx->dit_cfg.patch_size) * ctx->dit_cfg.patch_size;
+    s.S     = s.T / ctx->dit_cfg.patch_size;
     s.enc_S = 0;
 
     fprintf(stderr, "[Resolve-T] T=%d, S=%d\n", s.T, s.S);
@@ -252,23 +252,13 @@ int ops_encode_text(AceSynth * ctx, const AceRequest * reqs, int batch_n, SynthS
     // Each batch element gets its own caption, lyrics, and metadata encoded independently.
     // TextEncoder + CondEncoder run in series (cheap: ~13ms per element).
     // Results are padded to s.max_enc_S with null_cond and stacked for a single DiT batch pass.
-    int H_text = ctx->text_enc.cfg.hidden_size;     // 1024
-    int H_cond = (int) ctx->dit.cond_emb_w->ne[0];  // encoder hidden size (2048)
+    int H_text = ctx->text_enc.cfg.hidden_size;        // 1024
+    int H_cond = ctx->cond_enc.lyric_cfg.hidden_size;  // encoder hidden size (2048)
 
-    // read null_condition_emb from GPU for padding shorter encodings
+    // null_condition_emb cached on CPU at ace_synth_load. Empty when the model has none.
     s.null_cond_vec.resize(H_cond);
-    if (ctx->dit.null_condition_emb) {
-        int emb_n = (int) ggml_nelements(ctx->dit.null_condition_emb);
-        if (ctx->dit.null_condition_emb->type == GGML_TYPE_BF16) {
-            std::vector<uint16_t> bf16_buf(emb_n);
-            ggml_backend_tensor_get(ctx->dit.null_condition_emb, bf16_buf.data(), 0, emb_n * sizeof(uint16_t));
-            for (int i = 0; i < emb_n; i++) {
-                uint32_t w = (uint32_t) bf16_buf[i] << 16;
-                memcpy(&s.null_cond_vec[i], &w, 4);
-            }
-        } else {
-            ggml_backend_tensor_get(ctx->dit.null_condition_emb, s.null_cond_vec.data(), 0, emb_n * sizeof(float));
-        }
+    if (!ctx->null_cond_cpu.empty()) {
+        memcpy(s.null_cond_vec.data(), ctx->null_cond_cpu.data(), H_cond * sizeof(float));
     }
 
     // instruction_str must be set by the orchestrator. Empty means unknown task or bug.
