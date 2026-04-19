@@ -381,7 +381,7 @@ static int scenario_integration(const char * lm_path) {
 }
 
 int main(int argc, char ** argv) {
-    fprintf(stderr, "acestep.cpp %s - test-model-store\n", ACE_VERSION);
+    fprintf(stderr, "acestep.cpp %s\n\n", ACE_VERSION);
 
     const char * lm_path  = nullptr;
     const char * dit_path = nullptr;
