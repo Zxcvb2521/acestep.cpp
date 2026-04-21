@@ -42,6 +42,17 @@ struct AceRequest {
     float guidance_scale;   // 0 = auto (1.0 for all models)
     float shift;            // 0 = auto (turbo: 3.0, base/sft: 1.0)
 
+    // Differential Correction in Wavelet domain (CVPR 2026, arXiv:2604.16044).
+    // Sampler-side correction for SNR-t bias in flow matching.
+    // dcw_mode = "low"|"high"|"double"|"pix". dcw_scaler applies to the low
+    // band in "low" and "double", to all bands in "high" and "pix". In
+    // "double", dcw_high_scaler is the independent scaler for the high
+    // band. Both scalers are modulated by t_curr. 0.0 disables (bit-perfect
+    // master). Paper-recommended starting value: 0.1.
+    float       dcw_scaler;       // 0.0 (disabled)
+    float       dcw_high_scaler;  // 0.0 (only read in mode "double")
+    std::string dcw_mode;         // "low"
+
     // cover mode (active when source audio is provided)
     float audio_cover_strength;  // 1.0 (0-1, fraction of DiT steps using source context)
     float cover_noise_strength;  // 0.0 (0-1, how close to source: 0=pure noise, 1=source)

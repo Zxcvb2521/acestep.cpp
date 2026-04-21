@@ -7,6 +7,7 @@
 #include "debug.h"
 #include "dit-graph.h"
 #include "dit.h"
+#include "dwt-haar.h"
 #include "philox.h"
 
 #include <cmath>
@@ -150,7 +151,10 @@ static int dit_ggml_generate(DiTGGML *           model,
                              const int *     real_enc_S_switch  = nullptr,
                              bool            use_sde            = false,
                              const int64_t * seeds              = nullptr,
-                             bool            use_batch_cfg      = true) {
+                             bool            use_batch_cfg      = true,
+                             float           dcw_scaler         = 0.0f,
+                             float           dcw_high_scaler    = 0.0f,
+                             const char *    dcw_mode           = "low") {
     DiTGGMLConfig & c       = model->cfg;
     int             Oc      = c.out_channels;      // 64
     int             ctx_ch  = c.in_channels - Oc;  // 128
@@ -603,6 +607,61 @@ static int dit_ggml_generate(DiTGGML *           model,
                 for (int i = 0; i < n_total; i++) {
                     xt[i] -= vt[i] * dt;
                 }
+            }
+
+            // DCW: Differential Correction in Wavelet domain (CVPR 2026).
+            // Sampler-side correction for SNR-t bias in flow matching.
+            // 4 modes with per-mode t-modulation, conformant to the reference
+            // code AMAP-ML/DCW (generate.py, FlowMatchEulerDiscreteScheduler.py):
+            //   low:    s = t_curr * dcw_scaler          (strong at high noise)
+            //   high:   s = (1 - t_curr) * dcw_scaler    (strong near clean)
+            //   double: low = t_curr * dcw_scaler, high = (1 - t_curr) * dcw_high_scaler
+            //   pix:    s = dcw_scaler                   (constant, no modulation)
+            // Rationale: diffusion models reconstruct low-freq before high-freq,
+            // so the correction tracks the reconstruction timeline per band.
+            // ODE-only: denoised = xt_after - vt * t_next (reconstructed from
+            // post-step xt, since xt_before = xt + vt * dt for Euler ODE so
+            // denoised = xt_before - vt * t_curr = xt - vt * t_next).
+            bool dcw_active = (dcw_scaler > 0.0f || dcw_high_scaler > 0.0f) && !(use_sde && seeds);
+            if (dcw_active) {
+                int                Tl = (T + 1) / 2;
+                std::vector<float> denoised(n_per);
+                std::vector<float> tmp_xL(Tl * Oc), tmp_xH(Tl * Oc);
+                std::vector<float> tmp_yL(Tl * Oc), tmp_yH(Tl * Oc);
+                bool               is_low    = (strcmp(dcw_mode, "low") == 0);
+                bool               is_high   = (strcmp(dcw_mode, "high") == 0);
+                bool               is_double = (strcmp(dcw_mode, "double") == 0);
+                bool               is_pix    = (strcmp(dcw_mode, "pix") == 0);
+                if (!is_low && !is_high && !is_double && !is_pix) {
+                    // Unknown mode: fall back to "low" (safest, paper default)
+                    is_low = true;
+                }
+                // per-mode effective scaler, modulated as the paper prescribes
+                float s_low      = t_curr * dcw_scaler;           // low-band coefficient
+                float s_high     = (1.0f - t_curr) * dcw_scaler;  // high-only uses dcw_scaler with inverse modulation
+                float s_double_h = (1.0f - t_curr) * dcw_high_scaler;  // double mode high coefficient
+                float s_pix      = dcw_scaler;                         // constant per paper
+                for (int b = 0; b < N; b++) {
+                    const float * xt_b = xt.data() + b * n_per;
+                    const float * vt_b = vt.data() + b * n_per;
+                    for (int i = 0; i < n_per; i++) {
+                        denoised[i] = xt_b[i] - vt_b[i] * t_next;
+                    }
+                    float * xt_bw = xt.data() + b * n_per;
+                    if (is_low) {
+                        dcw_haar_low_inplace(xt_bw, denoised.data(), T, Oc, s_low, tmp_xL.data(), tmp_xH.data(),
+                                             tmp_yL.data(), tmp_yH.data());
+                    } else if (is_high) {
+                        dcw_haar_high_inplace(xt_bw, denoised.data(), T, Oc, s_high, tmp_xL.data(), tmp_xH.data(),
+                                              tmp_yL.data(), tmp_yH.data());
+                    } else if (is_double) {
+                        dcw_haar_double_inplace(xt_bw, denoised.data(), T, Oc, s_low, s_double_h, tmp_xL.data(),
+                                                tmp_xH.data(), tmp_yL.data(), tmp_yH.data());
+                    } else {  // is_pix
+                        dcw_pix_inplace(xt_bw, denoised.data(), T, Oc, s_pix);
+                    }
+                }
+                fprintf(stderr, "[DiT] DCW step %d/%d mode=%s (t_curr=%.3f)\n", step + 1, num_steps, dcw_mode, t_curr);
             }
         }
 

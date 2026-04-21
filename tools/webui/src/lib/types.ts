@@ -21,6 +21,9 @@ export interface AceRequest {
 	inference_steps?: number;
 	guidance_scale?: number;
 	shift?: number;
+	dcw_scaler?: number;
+	dcw_high_scaler?: number;
+	dcw_mode?: string;
 	audio_cover_strength?: number;
 	cover_noise_strength?: number;
 	repainting_start?: number;

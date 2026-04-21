@@ -803,6 +803,33 @@
 					/></label
 				>
 				<label
+					>DCW mode <select
+						value={app.request.dcw_mode || ''}
+						onchange={(e) => {
+							app.request.dcw_mode = e.currentTarget.value;
+						}}
+					>
+						<option value="">Low</option>
+						<option value="high">High</option>
+						<option value="double">Double</option>
+						<option value="pix">Pix</option>
+					</select></label
+				>
+				<label
+					>DCW scaler <input
+						type="text"
+						placeholder={ph(d?.dcw_scaler)}
+						bind:value={app.request.dcw_scaler}
+					/></label
+				>
+				<label
+					>DCW high scaler <input
+						type="text"
+						placeholder={ph(d?.dcw_high_scaler)}
+						bind:value={app.request.dcw_high_scaler}
+					/></label
+				>
+				<label
 					>Repaint start <input
 						type="text"
 						placeholder={ph(d?.repainting_start)}

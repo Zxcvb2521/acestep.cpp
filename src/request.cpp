@@ -37,6 +37,9 @@ void request_init(AceRequest * r) {
     r->inference_steps      = 0;     // 0 = auto (turbo: 8, base/sft: 50)
     r->guidance_scale       = 0.0f;  // 0 = auto (1.0 for all models)
     r->shift                = 0.0f;  // 0 = auto (turbo: 3.0, base/sft: 1.0)
+    r->dcw_scaler           = 0.0f;
+    r->dcw_high_scaler      = 0.0f;
+    r->dcw_mode             = DCW_MODE_LOW;
     r->audio_cover_strength = 1.0f;
     r->cover_noise_strength = 0.0f;
     r->repainting_start     = 0.0f;
@@ -147,6 +150,15 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     }
     if ((v = yyjson_obj_get(obj, "shift")) && yyjson_is_num(v)) {
         r->shift = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "dcw_scaler")) && yyjson_is_num(v)) {
+        r->dcw_scaler = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "dcw_high_scaler")) && yyjson_is_num(v)) {
+        r->dcw_high_scaler = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "dcw_mode")) && yyjson_is_str(v)) {
+        r->dcw_mode = yyjson_get_str(v);
     }
     if ((v = yyjson_obj_get(obj, "audio_cover_strength")) && yyjson_is_num(v)) {
         r->audio_cover_strength = (float) yyjson_get_num(v);
@@ -351,6 +363,15 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     if (all || r->shift != def.shift) {
         yyjson_mut_obj_add_real(doc, root, "shift", r->shift);
     }
+    if (all || r->dcw_scaler != def.dcw_scaler) {
+        yyjson_mut_obj_add_real(doc, root, "dcw_scaler", r->dcw_scaler);
+    }
+    if (all || r->dcw_high_scaler != def.dcw_high_scaler) {
+        yyjson_mut_obj_add_real(doc, root, "dcw_high_scaler", r->dcw_high_scaler);
+    }
+    if (all || r->dcw_mode != def.dcw_mode) {
+        yyjson_mut_obj_add_str(doc, root, "dcw_mode", r->dcw_mode.c_str());
+    }
     // infer_method is always emitted for the same reason as task_type: the
     // request is explicit about its solver choice in any round trip.
     yyjson_mut_obj_add_str(doc, root, "infer_method", r->infer_method.c_str());
@@ -443,6 +464,10 @@ void request_dump(const AceRequest * r, FILE * f) {
     fprintf(f, "[Request] lm: temp=%.2f cfg=%.1f top_p=%.2f top_k=%d\n", r->lm_temperature, r->lm_cfg_scale,
             r->lm_top_p, r->lm_top_k);
     fprintf(f, "[Request] dit: steps=%d guidance=%.1f shift=%.1f\n", r->inference_steps, r->guidance_scale, r->shift);
+    if (r->dcw_scaler > 0.0f || r->dcw_high_scaler > 0.0f) {
+        fprintf(f, "[Request] dit: dcw_mode=%s scaler=%.3f high_scaler=%.3f\n", r->dcw_mode.c_str(), r->dcw_scaler,
+                r->dcw_high_scaler);
+    }
     if (r->audio_cover_strength != 1.0f || r->cover_noise_strength != 0.0f) {
         fprintf(f, "[Request] cover: strength=%.2f noise_strength=%.2f\n", r->audio_cover_strength,
                 r->cover_noise_strength);

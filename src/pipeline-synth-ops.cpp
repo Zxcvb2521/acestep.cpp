@@ -721,13 +721,13 @@ int ops_dit_generate(const AceSynth * ctx, int batch_n, SynthState & s, bool (*c
     }
 
     s.timer.reset();
-    int dit_rc = dit_ggml_generate(dit, s.noise.data(), s.context.data(), s.enc_hidden.data(), s.enc_S, s.T, batch_n,
-                                   s.num_steps, s.schedule.data(), s.output.data(), s.guidance_scale, &s.dbg,
-                                   s.context_silence.empty() ? nullptr : s.context_silence.data(), s.cover_steps,
-                                   cancel, cancel_data, s.per_S.data(), s.per_enc_S.data(),
-                                   s.enc_hidden_nc.empty() ? nullptr : s.enc_hidden_nc.data(),
-                                   s.per_enc_S_nc_final.empty() ? nullptr : s.per_enc_S_nc_final.data(), s.use_sde,
-                                   s.seeds.data(), ctx->params.use_batch_cfg);
+    int dit_rc = dit_ggml_generate(
+        dit, s.noise.data(), s.context.data(), s.enc_hidden.data(), s.enc_S, s.T, batch_n, s.num_steps,
+        s.schedule.data(), s.output.data(), s.guidance_scale, &s.dbg,
+        s.context_silence.empty() ? nullptr : s.context_silence.data(), s.cover_steps, cancel, cancel_data,
+        s.per_S.data(), s.per_enc_S.data(), s.enc_hidden_nc.empty() ? nullptr : s.enc_hidden_nc.data(),
+        s.per_enc_S_nc_final.empty() ? nullptr : s.per_enc_S_nc_final.data(), s.use_sde, s.seeds.data(),
+        ctx->params.use_batch_cfg, s.rr.dcw_scaler, s.rr.dcw_high_scaler, s.rr.dcw_mode.c_str());
     if (dit_rc != 0) {
         return -1;
     }
