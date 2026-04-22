@@ -64,6 +64,18 @@ struct AceRequest {
     float repainting_start;  // 0
     float repainting_end;    // -1
 
+    // Latent post-processing applied after DiT sampling, before VAE decode:
+    //   pred = pred * latent_rescale + latent_shift
+    // Defaults are no-op.
+    float latent_shift;    // 0.0
+    float latent_rescale;  // 1.0
+
+    // Custom flow matching schedule: comma-separated floats,
+    // e.g. "0.97,0.76,0.615,0.5,0.395,0.28,0.18,0.085,0". When non-empty,
+    // overrides inference_steps and shift. The trailing endpoint is the x0
+    // target dropped by the sampler, so a CSV of N values yields N-1 steps.
+    std::string custom_timesteps;  // ""
+
     // task type: one of text2music, cover, cover-nofsq, repaint, lego, extract, complete.
     // Default: text2music.
     std::string task_type;  // "text2music"

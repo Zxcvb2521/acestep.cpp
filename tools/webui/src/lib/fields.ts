@@ -55,10 +55,13 @@ export const FIELDS: readonly FieldDef[] = [
 	{ key: 'seed', section: 'flow', type: 'num' },
 
 	// advanced and post-processing: cleared by its own Clear, preserved across Compose
+	{ key: 'custom_timesteps', section: 'advanced', type: 'str' },
+	{ key: 'dcw_mode', section: 'advanced', type: 'str' },
 	{ key: 'dcw_scaler', section: 'advanced', type: 'num' },
 	{ key: 'dcw_high_scaler', section: 'advanced', type: 'num' },
-	{ key: 'dcw_mode', section: 'advanced', type: 'str' },
 	{ key: 'infer_method', section: 'advanced', type: 'str' },
+	{ key: 'latent_shift', section: 'advanced', type: 'num' },
+	{ key: 'latent_rescale', section: 'advanced', type: 'num' },
 	{ key: 'peak_clip', section: 'advanced', type: 'num' },
 	{ key: 'mp3_bitrate', section: 'advanced', type: 'num', min: 1 },
 

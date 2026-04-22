@@ -12,33 +12,40 @@
 #include "task-types.h"
 #include "vae-enc.h"
 
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <system_error>
 #include <vector>
 
 static const int FRAMES_PER_SECOND = 25;
 
-static std::vector<int> parse_codes_string(const std::string & s) {
-    std::vector<int> codes;
-    if (s.empty()) {
-        return codes;
-    }
-    const char * p = s.c_str();
-    while (*p) {
-        while (*p == ',' || *p == ' ') {
-            p++;
+// CSV list parser tolerant to any whitespace around commas. Locale-immune via
+// std::from_chars (C++17 charconv, overloaded on the numeric type). Used for
+// audio_codes (int) and custom_timesteps (float). Bails on first parse error
+// or overflow, returning the values consumed so far.
+template <typename T> static std::vector<T> parse_csv(const std::string & s) {
+    std::vector<T> out;
+    const char *   first = s.data();
+    const char *   last  = first + s.size();
+    while (first < last) {
+        while (first < last && (*first == ',' || *first == ' ')) {
+            first++;
         }
-        if (!*p) {
+        if (first == last) {
             break;
         }
-        codes.push_back(atoi(p));
-        while (*p && *p != ',') {
-            p++;
+        T    v{};
+        auto r = std::from_chars(first, last, v);
+        if (r.ec != std::errc{}) {
+            break;
         }
+        out.push_back(v);
+        first = r.ptr;
     }
-    return codes;
+    return out;
 }
 
 int ops_encode_src(const AceSynth * ctx, const float * src_audio, int src_len, SynthState & s) {
@@ -174,7 +181,7 @@ int ops_resolve_params(const AceSynth * ctx, const AceRequest * reqs, int batch_
     s.max_codes_len = 0;
     s.have_codes    = false;
     for (int b = 0; b < batch_n; b++) {
-        s.per_codes[b] = parse_codes_string(reqs[b].audio_codes);
+        s.per_codes[b] = parse_csv<int>(reqs[b].audio_codes);
         int sz         = (int) s.per_codes[b].size();
         if (sz > s.max_codes_len) {
             s.max_codes_len = sz;
@@ -192,7 +199,21 @@ int ops_resolve_params(const AceSynth * ctx, const AceRequest * reqs, int batch_
 }
 
 void ops_build_schedule(SynthState & s) {
-    // Build s.schedule: t_i = s.shift * t / (1 + (s.shift-1)*t) where t = 1 - i/steps
+    // Custom timesteps override: CSV floats like
+    // "0.97,0.76,0.615,0.5,0.395,0.28,0.18,0.085,0". Last value is the x0
+    // endpoint handled implicitly by the sampler, so we drop it and take
+    // schedule = first N-1 entries, num_steps = N-1.
+    if (!s.rr.custom_timesteps.empty()) {
+        std::vector<float> ts = parse_csv<float>(s.rr.custom_timesteps);
+        if (ts.size() >= 2) {
+            s.num_steps = (int) ts.size() - 1;
+            s.schedule.assign(ts.begin(), ts.end() - 1);
+            fprintf(stderr, "[Build-Schedule] Custom timesteps: %d steps\n", s.num_steps);
+            return;
+        }
+        fprintf(stderr, "[Build-Schedule] WARN: custom_timesteps needs >= 2 values, falling back to shift\n");
+    }
+    // Default: t_i = shift * t / (1 + (shift-1)*t) with t = 1 - i/steps
     s.schedule.resize(s.num_steps);
     for (int i = 0; i < s.num_steps; i++) {
         float t       = 1.0f - (float) i / (float) s.num_steps;
@@ -732,6 +753,17 @@ int ops_dit_generate(const AceSynth * ctx, int batch_n, SynthState & s, bool (*c
         return -1;
     }
     fprintf(stderr, "[DiT-Generate] Total: %.1f ms (%.1f ms/sample)\n", s.timer.ms(), s.timer.ms() / batch_n);
+
+    // Latent post-processing before VAE decode: pred = pred * rescale + shift.
+    // Skipped at defaults (1.0 / 0.0).
+    if (s.rr.latent_rescale != 1.0f || s.rr.latent_shift != 0.0f) {
+        fprintf(stderr, "[DiT-Generate] Latent post: shift=%.3f rescale=%.3f\n", s.rr.latent_shift,
+                s.rr.latent_rescale);
+        const int n = (int) s.output.size();
+        for (int i = 0; i < n; i++) {
+            s.output[i] = s.output[i] * s.rr.latent_rescale + s.rr.latent_shift;
+        }
+    }
 
     debug_dump_2d(&s.dbg, "dit_output", s.output.data(), s.T, s.Oc);
     return 0;

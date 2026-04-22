@@ -44,6 +44,9 @@ void request_init(AceRequest * r) {
     r->cover_noise_strength = 0.0f;
     r->repainting_start     = 0.0f;
     r->repainting_end       = -1.0f;
+    r->latent_shift         = 0.0f;
+    r->latent_rescale       = 1.0f;
+    r->custom_timesteps     = "";
     r->task_type            = TASK_TEXT2MUSIC;
     r->track                = "";
     r->infer_method         = INFER_ODE;
@@ -96,6 +99,9 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     }
     if ((v = yyjson_obj_get(obj, "infer_method")) && yyjson_is_str(v) && yyjson_get_len(v) > 0) {
         r->infer_method = yy_str(v);
+    }
+    if ((v = yyjson_obj_get(obj, "custom_timesteps")) && yyjson_is_str(v)) {
+        r->custom_timesteps = yy_str(v);
     }
     if ((v = yyjson_obj_get(obj, "lm_mode")) && yyjson_is_str(v) && yyjson_get_len(v) > 0) {
         r->lm_mode = yy_str(v);
@@ -172,6 +178,12 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     }
     if ((v = yyjson_obj_get(obj, "repainting_end")) && yyjson_is_num(v)) {
         r->repainting_end = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "latent_shift")) && yyjson_is_num(v)) {
+        r->latent_shift = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "latent_rescale")) && yyjson_is_num(v)) {
+        r->latent_rescale = (float) yyjson_get_num(v);
     }
     if ((v = yyjson_obj_get(obj, "peak_clip")) && yyjson_is_num(v)) {
         r->peak_clip = (int) yyjson_get_num(v);
@@ -402,6 +414,15 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     if (all || r->repainting_end != def.repainting_end) {
         yyjson_mut_obj_add_real(doc, root, "repainting_end", r->repainting_end);
     }
+    if (all || r->latent_shift != def.latent_shift) {
+        yyjson_mut_obj_add_real(doc, root, "latent_shift", r->latent_shift);
+    }
+    if (all || r->latent_rescale != def.latent_rescale) {
+        yyjson_mut_obj_add_real(doc, root, "latent_rescale", r->latent_rescale);
+    }
+    if (all || r->custom_timesteps != def.custom_timesteps) {
+        yyjson_mut_obj_add_str(doc, root, "custom_timesteps", r->custom_timesteps.c_str());
+    }
     // task_type is always emitted: it is the single source of truth for the
     // request and must be explicit in any round trip.
     yyjson_mut_obj_add_str(doc, root, "task_type", r->task_type.c_str());
@@ -481,6 +502,12 @@ void request_dump(const AceRequest * r, FILE * f) {
     }
     if (r->repainting_start != 0.0f || r->repainting_end >= 0.0f) {
         fprintf(f, "[Request] repaint: start=%.1f end=%.1f\n", r->repainting_start, r->repainting_end);
+    }
+    if (r->latent_shift != 0.0f || r->latent_rescale != 1.0f) {
+        fprintf(f, "[Request] latent post: shift=%.3f rescale=%.3f\n", r->latent_shift, r->latent_rescale);
+    }
+    if (!r->custom_timesteps.empty()) {
+        fprintf(f, "[Request] custom_timesteps: %s\n", r->custom_timesteps.c_str());
     }
     fprintf(f, "[Request] task_type: %s\n", r->task_type.c_str());
     if (!r->track.empty()) {

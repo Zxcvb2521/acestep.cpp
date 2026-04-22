@@ -862,6 +862,13 @@
 			<X size={20} />
 		</button>
 		<div class="details-body">
+			<label
+				>Custom scheduler <input
+					type="text"
+					placeholder="Descending floats 1 -> 0, comma-separated"
+					bind:value={app.request.custom_timesteps}
+				/></label
+			>
 			<div class="meta-grid">
 				<label
 					>DCW mode <select
@@ -902,6 +909,20 @@
 					</select></label
 				>
 				<label
+					>Latent shift <input
+						type="text"
+						placeholder={ph(d?.latent_shift)}
+						bind:value={app.request.latent_shift}
+					/></label
+				>
+				<label
+					>Latent rescale <input
+						type="text"
+						placeholder={ph(d?.latent_rescale)}
+						bind:value={app.request.latent_rescale}
+					/></label
+				>
+				<label
 					>Peak clip <input
 						type="text"
 						placeholder={ph(d?.peak_clip)}
@@ -931,6 +952,7 @@
 			title="Number of DiT variations per request. Each uses a consecutive seed."
 		/>
 		<span class="spacer"></span>
+		<span class="model-label">Format</span>
 		<select
 			bind:value={app.format}
 			title="Output audio format. WAV32 outputs raw IEEE float without normalization."
@@ -1092,7 +1114,7 @@
 		font-size: 0.85rem;
 		color: var(--fg-dim);
 		flex-shrink: 0;
-		width: 2rem;
+		min-width: 2rem;
 	}
 	.model-select {
 		flex: 1;

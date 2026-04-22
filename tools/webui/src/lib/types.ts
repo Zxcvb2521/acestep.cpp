@@ -28,6 +28,9 @@ export interface AceRequest {
 	cover_noise_strength?: number;
 	repainting_start?: number;
 	repainting_end?: number;
+	latent_shift?: number;
+	latent_rescale?: number;
+	custom_timesteps?: string;
 	task_type?: string;
 	track?: string;
 	infer_method?: string;
