@@ -786,10 +786,11 @@ Debug:
 
 Model selection comes from the first request JSON. `synth_model` picks
 the DiT from the registry, `adapter` picks an adapter from `--adapters`,
-`output_format` picks the output encoder (mp3, wav16, wav24, wav32). When
-`synth_model` is empty the first DiT in the registry is used; the text
-encoder and the VAE are always the first in their respective buckets.
-Models are loaded once and reused across all requests.
+`vae` picks the VAE from the registry, `output_format` picks the output
+encoder (mp3, wav16, wav24, wav32). When `synth_model` or `vae` is empty
+the first entry in the respective bucket is used; the text encoder is
+always the first in the registry. Models are loaded once and reused
+across all requests.
 
 When `adapter` is set, deltas are merged into the DiT projection weights
 at load time (before QKV fusion and GPU upload). For LoRA, the safetensors
@@ -1104,10 +1105,10 @@ Debug:
   --dump <dir>            Dump tok_latents + tok_codes (skip LM)
 ```
 
-Model selection comes from the request JSON (`lm_model`, `synth_model`);
-when unset, the first LM and the first DiT in the registry are used, and
-the VAE is always the first in the registry. Without `--request`,
-understand defaults apply (temperature 0.3, top_p disabled).
+Model selection comes from the request JSON (`lm_model`, `synth_model`,
+`vae`); when unset, the first LM, first DiT and first VAE in the
+registry are used. Without `--request`, understand defaults apply
+(temperature 0.3, top_p disabled).
 
 ## Architecture
 

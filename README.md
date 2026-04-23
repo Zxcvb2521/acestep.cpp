@@ -17,7 +17,7 @@ https://huggingface.co/Serveurperso/ACE-Step-1.5-GGUF/tree/main
 | LM | acestep-5Hz-lm-4B-Q8_0.gguf | 4.2 GB |
 | Text encoder | Qwen3-Embedding-0.6B-Q8_0.gguf | 748 MB |
 | DiT | acestep-v15-turbo-Q8_0.gguf | 2.4 GB |
-| VAE | vae-BF16.gguf (always this one) | 322 MB |
+| VAE | vae-BF16.gguf | 322 MB |
 
 Three LM sizes available: 0.6B (fast), 1.7B, 4B (best quality).
 Multiple DiT variants: turbo (8 steps), sft (50 steps, higher quality), base, shift1, shift3, continuous.

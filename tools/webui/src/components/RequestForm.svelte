@@ -52,6 +52,7 @@
 	let adapterStale = $derived(
 		!!app.request.adapter && !adapterList.includes(String(app.request.adapter))
 	);
+	let vaeList = $derived(app.props?.models.vae ?? []);
 	let taskType = $derived(app.request.task_type || d?.task_type || '');
 	let dp = $derived(
 		app.props?.presets
@@ -539,6 +540,18 @@
 					bind:value={app.request.adapter_scale}
 					title="Adapter scale factor. Lower if you hear structured noise or artifacts. Raise for stronger effect."
 				/>
+			</div>
+			<div class="model-row">
+				<span class="model-label">VAE</span>
+				<select
+					class="model-select"
+					bind:value={app.request.vae}
+					title="Variational Auto-Encoder for audio <-> latent conversion. Scanned from --models directory at startup."
+				>
+					{#each vaeList as name}
+						<option value={name}>{name}</option>
+					{/each}
+				</select>
 			</div>
 		</div>
 	</details>

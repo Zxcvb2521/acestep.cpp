@@ -94,15 +94,16 @@ struct AceRequest {
     // Audio output format: "mp3", "wav16", "wav24", "wav32". Default: mp3.
     std::string output_format;  // "mp3"
 
-    // model selection. synth_model and lm_model are resolved through the
-    // registry scanned from --models <dir>, by both the HTTP server and the
-    // CLI binaries. An empty value falls to the first matching entry of the
-    // registry. adapter and adapter_scale are read by server and ace-synth
-    // and resolved against --adapters <dir> when set.
+    // model selection. synth_model, lm_model and vae are resolved through
+    // the registry scanned from --models <dir>, by both the HTTP server and
+    // the CLI binaries. An empty value falls to the first matching entry of
+    // the registry. adapter and adapter_scale are read by server and
+    // ace-synth and resolved against --adapters <dir> when set.
     std::string synth_model;    // ""
     std::string lm_model;       // ""
     std::string adapter;        // ""
     float       adapter_scale;  // 1.0
+    std::string vae;            // ""
 
     // audio output: peak clip via percentile normalization.
     // 0 = peak normalization (100.0000th percentile, no clipping).

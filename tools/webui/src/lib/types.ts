@@ -41,6 +41,7 @@ export interface AceRequest {
 	lm_model?: string;
 	adapter?: string;
 	adapter_scale?: number;
+	vae?: string;
 }
 
 // GET /props response

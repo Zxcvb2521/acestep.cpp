@@ -185,6 +185,7 @@ static std::string g_loaded_dit;
 static std::string g_loaded_adapter;
 static float       g_loaded_adapter_scale = 1.0f;
 static std::string g_loaded_und_dit;
+static std::string g_loaded_vae;
 
 // pipeline params (rebuilt from registry paths on each load)
 static AceLmParams         g_lm_params;
@@ -590,7 +591,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
         return;
     }
 
-    // Resolve DiT, adapter and the text-encoder / VAE singletons.
+    // Resolve DiT, adapter, VAE and the text-encoder singleton.
     std::string        dit_name = resolve_name(g_registry.dit, ace_reqs[0].synth_model, g_loaded_dit);
     const ModelEntry * dit      = registry_find(g_registry.dit, dit_name.c_str());
     if (!dit) {
@@ -607,11 +608,20 @@ static void synth_worker(std::shared_ptr<Job>    job,
         job->status.store(2);
         return;
     }
+    std::string        vae_name = resolve_name(g_registry.vae, ace_reqs[0].vae, g_loaded_vae);
+    const ModelEntry * vae      = registry_find(g_registry.vae, vae_name.c_str());
+    if (!vae) {
+        fprintf(stderr, "[Server] VAE not found: %s\n", vae_name.c_str());
+        free(src_interleaved);
+        free(ref_interleaved);
+        job->status.store(2);
+        return;
+    }
 
     AceSynthParams p    = g_synth_params;
     p.text_encoder_path = g_registry.text_enc[0].path.c_str();
     p.dit_path          = dit->path.c_str();
-    p.vae_path          = g_registry.vae[0].path.c_str();
+    p.vae_path          = vae->path.c_str();
     p.adapter_path      = nullptr;
     p.adapter_scale     = 1.0f;
     if (!ace_reqs[0].adapter.empty()) {
@@ -626,7 +636,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
         p.adapter_path  = adapter->path.c_str();
         p.adapter_scale = ace_reqs[0].adapter_scale;
     }
-    fprintf(stderr, "[Server] Loading synth: DiT=%s%s%s\n", dit_name.c_str(),
+    fprintf(stderr, "[Server] Loading synth: DiT=%s VAE=%s%s%s\n", dit_name.c_str(), vae_name.c_str(),
             ace_reqs[0].adapter.empty() ? "" : " Adapter=", ace_reqs[0].adapter.c_str());
 
     AceSynth * ctx = ace_synth_load(g_store, &p);
@@ -693,10 +703,12 @@ static void synth_worker(std::shared_ptr<Job>    job,
         g_loaded_dit           = dit_name;
         g_loaded_adapter       = ace_reqs[0].adapter;
         g_loaded_adapter_scale = ace_reqs[0].adapter_scale;
+        g_loaded_vae           = vae_name;
     } else {
         g_loaded_dit.clear();
         g_loaded_adapter.clear();
         g_loaded_adapter_scale = 1.0f;
+        g_loaded_vae.clear();
     }
 
     const int total_tracks = total_alloc;
@@ -882,13 +894,16 @@ static void understand_worker(std::shared_ptr<Job> job, AceRequest ace_req, floa
         return;
     }
 
-    // Resolve LM + DiT (the DiT path carries the tokenizer weights).
-    std::string        lm_name  = resolve_name(g_registry.lm, ace_req.lm_model, g_loaded_lm);
-    std::string        dit_name = resolve_name(g_registry.dit, ace_req.synth_model, g_loaded_dit);
-    const ModelEntry * lm_entry = registry_find(g_registry.lm, lm_name.c_str());
-    const ModelEntry * dit      = registry_find(g_registry.dit, dit_name.c_str());
-    if (!lm_entry || !dit) {
-        fprintf(stderr, "[Server] LM or DiT not found: lm=%s dit=%s\n", lm_name.c_str(), dit_name.c_str());
+    // Resolve LM + DiT (the DiT path carries the tokenizer weights) + VAE.
+    std::string        lm_name   = resolve_name(g_registry.lm, ace_req.lm_model, g_loaded_lm);
+    std::string        dit_name  = resolve_name(g_registry.dit, ace_req.synth_model, g_loaded_dit);
+    std::string        vae_name  = resolve_name(g_registry.vae, ace_req.vae, g_loaded_vae);
+    const ModelEntry * lm_entry  = registry_find(g_registry.lm, lm_name.c_str());
+    const ModelEntry * dit       = registry_find(g_registry.dit, dit_name.c_str());
+    const ModelEntry * vae_entry = registry_find(g_registry.vae, vae_name.c_str());
+    if (!lm_entry || !dit || !vae_entry) {
+        fprintf(stderr, "[Server] LM, DiT or VAE not found: lm=%s dit=%s vae=%s\n", lm_name.c_str(), dit_name.c_str(),
+                vae_name.c_str());
         free(src_interleaved);
         job->status.store(2);
         return;
@@ -897,6 +912,7 @@ static void understand_worker(std::shared_ptr<Job> job, AceRequest ace_req, floa
     AceUnderstandParams p = g_und_params;
     p.model_path          = lm_entry->path.c_str();
     p.dit_path            = dit->path.c_str();
+    p.vae_path            = vae_entry->path.c_str();
 
     AceUnderstand * ctx = ace_understand_load(g_store, &p);
     if (!ctx) {
@@ -922,9 +938,11 @@ static void understand_worker(std::shared_ptr<Job> job, AceRequest ace_req, floa
     if (g_keep_loaded) {
         g_loaded_lm      = lm_name;
         g_loaded_und_dit = dit_name;
+        g_loaded_vae     = vae_name;
     } else {
         g_loaded_lm.clear();
         g_loaded_und_dit.clear();
+        g_loaded_vae.clear();
     }
 
     job->result_body = "[" + request_to_json(&out) + "]";
@@ -1237,7 +1255,7 @@ int main(int argc, char ** argv) {
     }
     g_lm_params.max_batch = g_max_batch;
 
-    // init understand params (vae for audio encoding, dit resolved per-request)
+    // init understand params (dit + vae resolved per-request)
     ace_understand_default_params(&g_und_params);
     g_und_params.use_fa      = g_lm_params.use_fa;
     g_und_params.use_fsm     = g_lm_params.use_fsm;
@@ -1245,9 +1263,6 @@ int main(int argc, char ** argv) {
     g_und_params.max_batch   = g_lm_params.max_batch;       // must match ace_lm: part of the LM ModelKey
     g_und_params.vae_chunk   = g_synth_params.vae_chunk;    // share --vae-chunk with /synth
     g_und_params.vae_overlap = g_synth_params.vae_overlap;  // share --vae-overlap with /synth
-    if (have_vae) {
-        g_und_params.vae_path = g_registry.vae[0].path.c_str();
-    }
 
     bool have_understand = have_lm && have_dit && have_vae;
 

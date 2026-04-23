@@ -150,10 +150,15 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "[Ace-Understand] FATAL: synth_model '%s' not found in registry\n", req.synth_model.c_str());
         return 1;
     }
+    const ModelEntry * vae_entry = req.vae.empty() ? &registry.vae[0] : registry_find(registry.vae, req.vae.c_str());
+    if (!vae_entry) {
+        fprintf(stderr, "[Ace-Understand] FATAL: vae '%s' not found in registry\n", req.vae.c_str());
+        return 1;
+    }
 
     params.model_path = lm_entry ? lm_entry->path.c_str() : NULL;
     params.dit_path   = dit_entry->path.c_str();
-    params.vae_path   = registry.vae[0].path.c_str();
+    params.vae_path   = vae_entry->path.c_str();
     params.dump_dir   = dump_dir;
 
     // load pipeline

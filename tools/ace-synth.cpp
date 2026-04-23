@@ -162,6 +162,12 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "[Ace-Synth] FATAL: synth_model '%s' not found in registry\n", reqs[0].synth_model.c_str());
         return 1;
     }
+    const ModelEntry * vae_entry =
+        reqs[0].vae.empty() ? &registry.vae[0] : registry_find(registry.vae, reqs[0].vae.c_str());
+    if (!vae_entry) {
+        fprintf(stderr, "[Ace-Synth] FATAL: vae '%s' not found in registry\n", reqs[0].vae.c_str());
+        return 1;
+    }
     const AdapterEntry * adapter_entry = NULL;
     if (!reqs[0].adapter.empty()) {
         adapter_entry = registry_find_adapter(registry, reqs[0].adapter.c_str());
@@ -184,7 +190,7 @@ int main(int argc, char ** argv) {
     // Fill params from registry lookups and CLI flags.
     params.text_encoder_path = registry.text_enc[0].path.c_str();
     params.dit_path          = dit_entry->path.c_str();
-    params.vae_path          = registry.vae[0].path.c_str();
+    params.vae_path          = vae_entry->path.c_str();
     params.adapter_path      = adapter_entry ? adapter_entry->path.c_str() : NULL;
     params.adapter_scale     = reqs[0].adapter_scale;
     params.use_fa            = use_fa;
