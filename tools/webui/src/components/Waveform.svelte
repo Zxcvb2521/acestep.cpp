@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { onMount, tick as svelteTick } from 'svelte';
 	import { untrack } from 'svelte';
-	import { WAVEFORM_HEIGHT } from '../lib/config.js';
+	import { WAVEFORM_HEIGHT, WAVEFORM_BINS } from '../lib/config.js';
 	import { app } from '../lib/state.svelte.js';
+	import { putSong } from '../lib/db.js';
+	import type { Song } from '../lib/types.js';
 	import {
 		getContext,
 		registerPlaying,
@@ -12,7 +14,7 @@
 	} from '../lib/audio.js';
 
 	let {
-		audio,
+		song,
 		playing = $bindable(false),
 		time = $bindable(0),
 		dur = $bindable(0),
@@ -20,7 +22,7 @@
 		rangeStart = $bindable(0),
 		rangeEnd = $bindable(0)
 	}: {
-		audio: Blob;
+		song: Song;
 		playing: boolean;
 		time: number;
 		dur: number;
@@ -30,7 +32,7 @@
 	} = $props();
 
 	let canvas: HTMLCanvasElement;
-	let peaks: number[] = [];
+	let peaks: Float32Array = new Float32Array();
 	let raf = 0;
 	let cw = 0;
 	let ch = 0;
@@ -50,7 +52,7 @@
 	let anchor = -1;
 
 	onMount(() => {
-		cw = canvas.clientWidth || 300;
+		cw = WAVEFORM_BINS;
 		ch = WAVEFORM_HEIGHT;
 		canvas.width = cw;
 		canvas.height = ch;
@@ -60,14 +62,25 @@
 		gain.gain.value = untrack(() => app.volume);
 		gain.connect(actx.destination);
 
-		audio
+		// peaks cache hit: skip decode entirely, draw from cached array
+		if (song.peaks) {
+			peaks = song.peaks;
+			dur = song.duration;
+			draw();
+		}
+
+		song.audio
 			.arrayBuffer()
 			.then((buf) => actx!.decodeAudioData(buf))
 			.then((buf) => {
 				decoded = buf;
 				dur = buf.duration;
-				peaks = computePeaks(buf, cw);
-				draw();
+				if (!song.peaks) {
+					song.peaks = computePeaks(buf, WAVEFORM_BINS);
+					if (song.id != null) putSong(song);
+					peaks = song.peaks;
+					draw();
+				}
 			})
 			.catch(() => {});
 
@@ -125,10 +138,10 @@
 		}
 	});
 
-	function computePeaks(buf: AudioBuffer, numBins: number): number[] {
+	function computePeaks(buf: AudioBuffer, numBins: number): Float32Array {
 		const raw = buf.getChannelData(0);
 		const binSize = Math.floor(raw.length / numBins);
-		const out: number[] = [];
+		const out = new Float32Array(numBins);
 		for (let i = 0; i < numBins; i++) {
 			let max = 0;
 			const start = i * binSize;
@@ -137,7 +150,7 @@
 				const v = raw[j] < 0 ? -raw[j] : raw[j];
 				if (v > max) max = v;
 			}
-			out.push(max);
+			out[i] = max;
 		}
 		return out;
 	}
@@ -228,13 +241,13 @@
 
 		if (hasRange) {
 			ctx.fillStyle = colorRange;
-			ctx.fillRect(rA * cw - 0.5, 0, 1, ch);
-			ctx.fillRect(rB * cw - 0.5, 0, 1, ch);
+			ctx.fillRect(rA * cw - 2, 0, 4, ch);
+			ctx.fillRect(rB * cw - 2, 0, 4, ch);
 		}
 
 		if (progress > 0 && progress < 1) {
 			ctx.fillStyle = colorPlay;
-			ctx.fillRect(progress * cw - 0.5, 0, 1, ch);
+			ctx.fillRect(progress * cw - 2, 0, 4, ch);
 		}
 	}
 

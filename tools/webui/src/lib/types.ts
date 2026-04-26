@@ -81,4 +81,8 @@ export interface Song {
 	// present, the client uploads them instead of audio on subsequent jobs
 	// that reuse this song as src or ref, skipping a VAE encode each time.
 	latents?: Blob;
+	// 4096 normalized peaks [0..1] cached after the first decode, so F5
+	// and re-mounts skip decodeAudioData entirely. Downsampled at draw
+	// time to whatever canvas width is on screen.
+	peaks?: Float32Array;
 }

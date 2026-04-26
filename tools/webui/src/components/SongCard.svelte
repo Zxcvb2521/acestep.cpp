@@ -272,7 +272,7 @@
 		</Menu>
 	</div>
 	<Waveform
-		audio={song.audio}
+		{song}
 		bind:playing
 		bind:time
 		bind:dur

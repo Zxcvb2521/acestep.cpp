@@ -5,6 +5,7 @@ export const JOB_POLL_MS = 2000;
 export const SSE_RECONNECT_MS = 2000;
 export const LOG_MAX_LINES = 50;
 export const WAVEFORM_HEIGHT = 64;
+export const WAVEFORM_BINS = 4096;
 
 // task types (mirrors task-types.h)
 export const TASK_TEXT2MUSIC = 'text2music';
