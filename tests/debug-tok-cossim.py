@@ -74,7 +74,7 @@ def run_cpp(wav_path, dit_model, dump_dir):
     # ace-understand resolves synth_model through the registry under --models.
     req_path = os.path.join(dump_dir, "tok-request.json")
     with open(req_path, "w") as f:
-        json.dump({"synth_model": dit_model}, f)
+        json.dump({"synth_model": dit_model, "vae": "vae-BF16.gguf"}, f)
 
     cmd = [ACE_BIN,
            "--models", MODELS_DIR,

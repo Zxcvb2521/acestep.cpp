@@ -95,6 +95,7 @@ def main():
     # Define the test request. Inherit the prompt and metadata from the
     # ace-lm output, force the SFT DiT through synth_model.
     req["synth_model"] = DIT_MODEL
+    req["vae"] = "vae-BF16.gguf"
     dump_dir = os.path.join(SCRIPT_DIR, "detok-dump")
     if os.path.isdir(dump_dir):
         shutil.rmtree(dump_dir)

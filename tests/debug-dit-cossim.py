@@ -126,6 +126,7 @@ def run_ggml(dump_dir, req, cfg, gguf_path, adapter_dir=None):
     merged["shift"] = cfg["shift"]
     merged["thinking"] = False
     merged["synth_model"] = os.path.basename(gguf_path)
+    merged["vae"] = "vae-BF16.gguf"
 
     adapters_root = None
     if adapter_dir:
