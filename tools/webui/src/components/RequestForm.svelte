@@ -1,36 +1,60 @@
 <script lang="ts">
-	import { RotateCcw, Download, FolderOpen } from '@lucide/svelte';
+	import { onMount } from 'svelte';
+	import { RotateCcw, Download, FolderOpen, X } from '@lucide/svelte';
 	import { app, toast, setRequest } from '../lib/state.svelte.js';
 	import { rollDice } from '../lib/dice.js';
 	import {
-		lmGenerate,
-		lmInspire,
-		lmFormat,
-		synthGenerate,
-		synthGenerateWithAudio,
-		understandAudio
+		lmSubmit,
+		lmSubmitInspire,
+		lmSubmitFormat,
+		synthSubmit,
+		synthSubmitWithAudio,
+		pollJob,
+		jobResultJson,
+		jobResultBlobs,
+		vaeDecode,
+		cancelJob
 	} from '../lib/api.js';
-	import { putSong } from '../lib/db.js';
+	import { putSong, getAllSongs, saveJob, loadJob, loadJobId, clearJob } from '../lib/db.js';
 	import {
+		TASK_TEXT2MUSIC,
 		TASK_COVER,
 		TASK_COVER_NOFSQ,
 		TASK_REPAINT,
 		TASK_LEGO,
 		TASK_EXTRACT,
 		TASK_COMPLETE,
+		INFER_ODE,
+		INFER_SDE,
+		DCW_MODE_LOW,
+		DCW_MODE_HIGH,
+		DCW_MODE_DOUBLE,
+		DCW_MODE_PIX,
 		TRACK_NAMES
 	} from '../lib/config.js';
+	import {
+		num,
+		buildSparse,
+		clearSection,
+		withCurrentSettings,
+		pickSections
+	} from '../lib/fields.js';
 	import type { AceRequest, Song } from '../lib/types.js';
 
-	let busy = $state(false);
+	let busyLm = $state(false);
+	let busySynth = $state(false);
+	let busy = $derived(busyLm || busySynth);
 	let fileInput: HTMLInputElement;
 
 	let d = $derived(app.props?.default);
 	let ditModels = $derived(app.props?.models.dit ?? []);
 	let lmModels = $derived(app.props?.models.lm ?? []);
-	let loraList = $derived(app.props?.loras ?? []);
-	let loraStale = $derived(!!app.request.lora && !loraList.includes(String(app.request.lora)));
-	let taskType = $derived(app.request.task_type || '');
+	let adapterList = $derived(app.props?.adapters ?? []);
+	let adapterStale = $derived(
+		!!app.request.adapter && !adapterList.includes(String(app.request.adapter))
+	);
+	let vaeList = $derived(app.props?.models.vae ?? []);
+	let taskType = $derived(app.request.task_type || d?.task_type || '');
 	let dp = $derived(
 		app.props?.presets
 			? String(app.request.synth_model || '').includes('turbo')
@@ -46,8 +70,25 @@
 	// DiT input indicators
 	let hasCodes = $derived(!!app.request.audio_codes?.trim() && app.srcSongId == null);
 	let hasSrc = $derived(app.srcSongId != null);
-	let hasRange = $derived(app.srcRangeStart >= 0 && app.srcRangeEnd > app.srcRangeStart);
+	let hasRange = $derived(app.srcRangeStart != null || app.srcRangeEnd != null);
 	let hasRef = $derived(app.refSongId != null);
+
+	// instrumental mode: checked when lyrics and language match the convention.
+	// any manual edit to either field naturally unchecks via $derived.
+	let instrumental = $derived(
+		String(app.request.lyrics || '').trim() === '[Instrumental]' &&
+			String(app.request.vocal_language || '').trim() === 'unknown'
+	);
+
+	function toggleInstrumental() {
+		if (instrumental) {
+			app.request.lyrics = '';
+			app.request.vocal_language = '';
+		} else {
+			app.request.lyrics = '[Instrumental]';
+			app.request.vocal_language = 'unknown';
+		}
+	}
 
 	// track selection: radio for lego/extract, multi for complete
 	let selectedTracks: Set<string> = $state(new Set());
@@ -77,6 +118,84 @@
 		}
 	});
 
+	// cancel the active pipeline job
+	async function cancelPipeline() {
+		try {
+			if (busySynth) {
+				const synthId = loadJobId('synth');
+				if (synthId) await cancelJob(synthId);
+			} else if (busyLm) {
+				const lmId = loadJobId('lm');
+				if (lmId) await cancelJob(lmId);
+			}
+		} catch {}
+	}
+
+	// on mount: resume polling for any pending jobs in localStorage.
+	onMount(() => {
+		// LM job
+		const lmId = loadJobId('lm');
+		if (lmId) {
+			busyLm = true;
+			pollJob(lmId)
+				.then(() => jobResultJson(lmId))
+				.then((results) => {
+					clearJob('lm');
+					app.pendingRequests = results;
+					app.pendingIndex = 0;
+					if (results.length > 0) {
+						setRequest(results[0]);
+					}
+				})
+				.catch(() => {
+					clearJob('lm');
+				})
+				.finally(() => {
+					busyLm = false;
+				});
+		}
+
+		// synth job
+		const synthJob = loadJob('synth');
+		if (synthJob) {
+			busySynth = true;
+			pollJob(synthJob.id)
+				.then(() => jobResultBlobs(synthJob.id))
+				.then(async ({ audios, latents }) => {
+					clearJob('synth');
+					const now = Date.now();
+					for (let i = audios.length - 1; i >= 0; i--) {
+						const t = synthJob.tracks[i] || {
+							caption: '',
+							seed: 0,
+							duration: 0,
+							task: '',
+							request: { caption: '' }
+						};
+						const song: Song = {
+							name: synthJob.name,
+							format: synthJob.format,
+							created: now + i,
+							caption: t.caption,
+							seed: t.seed,
+							duration: t.duration,
+							request: t.request,
+							audio: audios[i],
+							latents: latents[i]
+						};
+						await putSong(song);
+					}
+					app.songs = (await getAllSongs()).reverse();
+				})
+				.catch(() => {
+					clearJob('synth');
+				})
+				.finally(() => {
+					busySynth = false;
+				});
+		}
+	});
+
 	function reset() {
 		app.name = '';
 		setRequest({ caption: '' });
@@ -91,7 +210,7 @@
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		const safe = app.name.replace(/[^a-zA-Z0-9 _-]/g, '') || 'request';
+		const safe = app.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '') || 'request';
 		a.download = `${safe}.json`;
 		a.click();
 		URL.revokeObjectURL(url);
@@ -126,115 +245,92 @@
 			return;
 		}
 
-		// MP3 or WAV: send to /understand, populate form + create song card
+		// MP3 or WAV: create song card (audio only, use Scan for metadata)
 		if (ext === 'mp3' || ext === 'wav') {
-			importAudio(file, ext);
+			openAudio(file, ext);
+			return;
+		}
+
+		// VAE latents: decode through /vae to obtain the audio, create a
+		// card already populated with both blobs (latents badge lit on day one).
+		if (ext === 'vae') {
+			openLatents(file);
 			return;
 		}
 
 		toast('Unsupported file type: ' + ext);
 	}
 
-	// import audio file via /understand endpoint.
-	// creates a song card with the original audio and fills the form
-	// with the returned metadata so it matches existing generated songs.
-	async function importAudio(file: File, ext: string) {
-		busy = true;
+	// open audio file: create song card with audio only (no server call).
+	// use Scan on the card to analyze metadata.
+	async function openAudio(file: File, ext: string) {
+		const blob = new Blob([await file.arrayBuffer()], {
+			type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
+		});
+		const name = file.name.replace(/\.(mp3|wav)$/i, '') || 'Imported';
+		const song: Song = {
+			name,
+			format: ext,
+			created: Date.now(),
+			caption: '',
+			seed: 0,
+			duration: 0,
+			request: { caption: '' },
+			audio: blob
+		};
+		song.id = await putSong(song);
+		app.songs.unshift(song);
+		app.name = name;
+		toast('Opened: ' + name, 4000, true);
+	}
+
+	// open VAE latents file: validate framing client-side, post to /vae
+	// to render the audio, then create a card with both blobs ready to use.
+	// Same final shape as openAudio plus the latents attached, so cover-nofsq
+	// against this card skips the VAE encode from the very first run.
+	async function openLatents(file: File) {
+		const buf = await file.arrayBuffer();
+		if (buf.byteLength === 0 || buf.byteLength % 256 !== 0) {
+			toast('Invalid .vae file: size must be a multiple of 256 bytes (64 channels x f32)');
+			return;
+		}
+		const T = buf.byteLength / 256;
+		if (T > 15000) {
+			toast('Invalid .vae file: too long (max 15000 frames = 10 min)');
+			return;
+		}
+		const latentsBlob = new Blob([buf], { type: 'application/octet-stream' });
+		const name = file.name.replace(/\.vae$/i, '') || 'Imported';
 		try {
-			toast('Understanding audio...', 4000, true);
-			const blob = new Blob([await file.arrayBuffer()], {
-				type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
-			});
-			const result = await understandAudio(
-				blob,
-				app.request.lm_model as string,
-				app.request.synth_model as string
-			);
-
-			setRequest(result);
-			app.pendingRequests = [];
-			app.pendingIndex = 0;
-
-			// derive a clean name from the filename (strip extension)
-			const name = file.name.replace(/\.(mp3|wav)$/i, '') || 'Imported';
-			app.name = name;
-
-			// create a song card so the audio is playable immediately
+			const jobId = await vaeDecode(latentsBlob, app.request);
+			await pollJob(jobId);
+			const { audios } = await jobResultBlobs(jobId);
+			if (!audios.length) throw new Error('Decode returned no audio');
 			const song: Song = {
-				name: name,
-				format: ext,
+				name,
+				format: app.format,
 				created: Date.now(),
-				caption: result.caption || '',
-				seed: Number(result.seed) || 0,
-				duration: Number(result.duration) || 0,
-				request: { ...result },
-				audio: blob
+				caption: '',
+				seed: 0,
+				duration: 0,
+				request: { caption: '' },
+				audio: audios[0],
+				latents: latentsBlob
 			};
 			song.id = await putSong(song);
 			app.songs.unshift(song);
-
-			toast('Imported: ' + name, 4000, true);
+			app.name = name;
+			toast('Opened: ' + name, 4000, true);
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
-		} finally {
-			busy = false;
 		}
-	}
-
-	// convert string or number to number, return undefined if empty/NaN
-	function num(v: unknown): number | undefined {
-		if (v == null || v === '') return undefined;
-		const n = Number(v);
-		return isNaN(n) ? undefined : n;
 	}
 
 	// snapshot app.request into a clean AceRequest with proper types.
 	// bind:value guarantees app.request always matches the DOM.
 	function buildRequest(): AceRequest {
-		const r = app.request;
-		const out: AceRequest = { caption: String(r.caption || '') };
-		if (r.lyrics) out.lyrics = String(r.lyrics);
-		if (r.audio_codes) out.audio_codes = String(r.audio_codes);
-		if (r.vocal_language) out.vocal_language = String(r.vocal_language);
-		if (r.keyscale) out.keyscale = String(r.keyscale);
-		if (r.timesignature) out.timesignature = String(r.timesignature);
-		const bpm = num(r.bpm);
-		if (bpm != null) out.bpm = bpm;
-		const duration = num(r.duration);
-		if (duration != null) out.duration = duration;
-		const seed = num(r.seed);
-		if (seed != null) out.seed = seed;
-		const lm_temperature = num(r.lm_temperature);
-		if (lm_temperature != null) out.lm_temperature = lm_temperature;
-		const lm_cfg_scale = num(r.lm_cfg_scale);
-		if (lm_cfg_scale != null) out.lm_cfg_scale = lm_cfg_scale;
-		const lm_top_p = num(r.lm_top_p);
-		if (lm_top_p != null) out.lm_top_p = lm_top_p;
-		const lm_top_k = num(r.lm_top_k);
-		if (lm_top_k != null) out.lm_top_k = lm_top_k;
-		if (r.lm_negative_prompt) out.lm_negative_prompt = String(r.lm_negative_prompt);
-		const inference_steps = num(r.inference_steps);
-		if (inference_steps != null) out.inference_steps = inference_steps;
-		const guidance_scale = num(r.guidance_scale);
-		if (guidance_scale != null) out.guidance_scale = guidance_scale;
-		const shift = num(r.shift);
-		if (shift != null) out.shift = shift;
-		const audio_cover_strength = num(r.audio_cover_strength);
-		if (audio_cover_strength != null) out.audio_cover_strength = audio_cover_strength;
-		const cover_noise_strength = num(r.cover_noise_strength);
-		if (cover_noise_strength != null) out.cover_noise_strength = cover_noise_strength;
-		const lm_batch_size = num(r.lm_batch_size);
-		if (lm_batch_size != null && lm_batch_size >= 1) out.lm_batch_size = lm_batch_size;
-		const synth_batch_size = num(r.synth_batch_size);
-		if (synth_batch_size != null && synth_batch_size >= 1) out.synth_batch_size = synth_batch_size;
-		if (r.task_type) out.task_type = String(r.task_type);
-		if (r.track) out.track = String(r.track);
-		if (r.infer_method) out.infer_method = String(r.infer_method);
-		if (r.synth_model) out.synth_model = String(r.synth_model);
-		if (r.lm_model) out.lm_model = String(r.lm_model);
-		if (r.lora && loraList.includes(String(r.lora))) out.lora = String(r.lora);
-		const lora_scale = num(r.lora_scale);
-		if (lora_scale != null) out.lora_scale = lora_scale;
+		const out = buildSparse(app.request);
+		if (out.adapter && !adapterList.includes(String(out.adapter))) delete out.adapter;
 		return out;
 	}
 
@@ -249,16 +345,7 @@
 	// synth params are form-global, not per-pending: preserve them across switches.
 	function loadPending(index: number) {
 		const r = app.pendingRequests[index];
-		setRequest({
-			...r,
-			inference_steps: app.request.inference_steps,
-			guidance_scale: app.request.guidance_scale,
-			shift: app.request.shift,
-			seed: app.request.seed,
-			audio_cover_strength: app.request.audio_cover_strength,
-			cover_noise_strength: app.request.cover_noise_strength,
-			synth_batch_size: app.request.synth_batch_size
-		});
+		setRequest(withCurrentSettings(r, app.request));
 		app.pendingIndex = index;
 	}
 
@@ -270,40 +357,26 @@
 		loadPending(next);
 	}
 
-	// shared: call an LM endpoint and load results into the form.
-	// LM enriches: caption, lyrics, bpm, duration, keyscale, timesignature, vocal_language, audio_codes.
-	// Everything else is preserved from the current UI state.
-	async function lmCall(fn: (req: AceRequest) => Promise<AceRequest[]>) {
-		busy = true;
+	// shared: call an LM endpoint via the job system and load results into the form.
+	async function lmCall(fn: (req: AceRequest) => Promise<string>) {
+		busyLm = true;
 		try {
 			const req = buildRequest();
 			req.audio_codes = '';
-			const results = await fn(req);
+			const jobId = await fn(req);
+			saveJob('lm', jobId);
+			await pollJob(jobId);
+			const results = await jobResultJson(jobId);
+			clearJob('lm');
 			if (results.length > 0) {
 				app.pendingRequests = results;
 				app.pendingIndex = 0;
-				setRequest({
-					...results[0],
-					inference_steps: app.request.inference_steps,
-					guidance_scale: app.request.guidance_scale,
-					shift: app.request.shift,
-					seed: app.request.seed,
-					audio_cover_strength: app.request.audio_cover_strength,
-					cover_noise_strength: app.request.cover_noise_strength,
-					repaint_strength: app.request.repaint_strength,
-					synth_batch_size: app.request.synth_batch_size,
-					lm_batch_size: app.request.lm_batch_size,
-					lm_temperature: app.request.lm_temperature,
-					lm_cfg_scale: app.request.lm_cfg_scale,
-					lm_top_p: app.request.lm_top_p,
-					lm_top_k: app.request.lm_top_k,
-					lm_negative_prompt: app.request.lm_negative_prompt
-				});
+				setRequest(withCurrentSettings(results[0], app.request));
 			}
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
 		} finally {
-			busy = false;
+			busyLm = false;
 		}
 	}
 
@@ -314,19 +387,19 @@
 
 	// Inspire: short caption -> fresh metadata + lyrics (no audio codes)
 	async function inspire() {
-		await lmCall(lmInspire);
+		await lmCall(lmSubmitInspire);
 	}
 
 	// Format: caption + lyrics -> metadata + lyrics (no audio codes)
 	async function format() {
-		await lmCall(lmFormat);
+		await lmCall(lmSubmitFormat);
 	}
 
 	// Compose: send form to LM, store all enriched results for batch synth.
 	// The LM preserves user-provided fields and fills the rest independently
 	// per batch item. Each result is a complete standalone request.
 	async function compose() {
-		await lmCall(lmGenerate);
+		await lmCall(lmSubmit);
 	}
 
 	// POST /synth: send pending requests (or current form) to the server.
@@ -334,7 +407,7 @@
 	// server groups by request and expands synth_batch_size for GPU batching.
 	// webui resolves seeds and predicts the expanded list for SongCard mapping.
 	async function synthesize() {
-		busy = true;
+		busySynth = true;
 		try {
 			savePending();
 			const reqs: AceRequest[] =
@@ -344,41 +417,12 @@
 			const synthBatch = Math.max(1, Number(app.request.synth_batch_size) || 1);
 			const userSeed = num(app.request.seed);
 			const hasSeed = userSeed != null && userSeed >= 0;
-			const synthParams: Partial<AceRequest> = {};
-			const steps = num(app.request.inference_steps);
-			if (steps != null) synthParams.inference_steps = steps;
-			const cfg = num(app.request.guidance_scale);
-			if (cfg != null) synthParams.guidance_scale = cfg;
-			const sh = num(app.request.shift);
-			if (sh != null) synthParams.shift = sh;
-			const acs = num(app.request.audio_cover_strength);
-			if (acs != null) synthParams.audio_cover_strength = acs;
-			const cns = num(app.request.cover_noise_strength);
-			if (cns != null) synthParams.cover_noise_strength = cns;
-			const rps = num(app.request.repaint_strength);
-			if (rps != null) synthParams.repaint_strength = rps;
-			// task_type and track from form
-			const t = app.request.task_type || '';
-			if (t) synthParams.task_type = t;
-			if (app.request.track) synthParams.track = app.request.track;
-			// infer_method from form
-			const im = app.request.infer_method || '';
-			if (im) synthParams.infer_method = im;
-			// model routing from form
-			if (app.request.synth_model) synthParams.synth_model = app.request.synth_model;
-			if (app.request.lora && loraList.includes(String(app.request.lora)))
-				synthParams.lora = app.request.lora;
-			const loraScale = num(app.request.lora_scale);
-			if (loraScale != null) synthParams.lora_scale = loraScale;
-			// repaint/lego: inject range from source audio selection (optional for lego)
-			if (
-				(t === TASK_REPAINT || t === TASK_LEGO) &&
-				app.srcRangeStart >= 0 &&
-				app.srcRangeEnd > app.srcRangeStart
-			) {
-				synthParams.repainting_start = app.srcRangeStart;
-				synthParams.repainting_end = app.srcRangeEnd;
-			}
+			const synthParams = pickSections(app.request, ['flow', 'advanced', 'toolbar', 'routing']);
+			// seed and synth_batch_size are per-expansion, handled below
+			delete synthParams.seed;
+			delete synthParams.synth_batch_size;
+			if (synthParams.adapter && !adapterList.includes(String(synthParams.adapter)))
+				delete synthParams.adapter;
 
 			// resolve seeds, build server payload and local expanded list for SongCard mapping.
 			// server receives synth_batch_size and expands internally (groups by T for GPU batch).
@@ -397,37 +441,59 @@
 			const srcSong = app.srcSongId != null ? app.songs.find((s) => s.id === app.srcSongId) : null;
 			const refSong = app.refSongId != null ? app.songs.find((s) => s.id === app.refSongId) : null;
 
-			const blobs =
-				srcSong || refSong
-					? await synthGenerateWithAudio(
-							toSend,
-							srcSong?.audio ?? null,
-							refSong?.audio ?? null,
-							app.format
-						)
-					: await synthGenerate(toSend, app.format);
-			const now = Date.now();
-			const baseName = app.name || 'Untitled';
-
 			// extract DiT variant from model filename
 			// "acestep-v15-xl-turbo-Q8_0.gguf" -> "xl-turbo"
 			const model = String(app.request.synth_model || '');
 			const vm = model.match(/^acestep-v15-(.+?)-(Q\d.*|BF16)\.gguf$/);
 			const variant = vm ? vm[1] : '';
+			const baseName = app.name || 'Untitled';
 
-			for (let i = blobs.length - 1; i >= 0; i--) {
+			// submit job, poll until done, fetch result. When the source song
+			// or timbre reference already carries cached latents, we upload
+			// those instead of the audio: the server skips the matching VAE
+			// encode entirely.
+			const jobId =
+				srcSong || refSong
+					? await synthSubmitWithAudio(
+							toSend,
+							srcSong?.latents ? null : (srcSong?.audio ?? null),
+							srcSong?.latents ?? null,
+							refSong?.latents ? null : (refSong?.audio ?? null),
+							refSong?.latents ?? null,
+							app.format
+						)
+					: await synthSubmit(toSend, app.format);
+			saveJob('synth', {
+				id: jobId,
+				name: baseName,
+				format: app.format,
+				variant,
+				tracks: expanded.map((r) => ({
+					caption: r.caption || '',
+					seed: r.seed || 0,
+					duration: r.duration || 0,
+					task: r.task_type || 'text2music',
+					request: r
+				}))
+			});
+			await pollJob(jobId);
+			const { audios, latents } = await jobResultBlobs(jobId);
+			clearJob('synth');
+
+			const now = Date.now();
+
+			for (let i = audios.length - 1; i >= 0; i--) {
 				const r = expanded[i];
-				const task = r.task_type || 'text2music';
-				const parts = [baseName, variant, task].filter((s) => s);
 				const song = {
-					name: parts.join(' '),
+					name: baseName,
 					format: app.format,
 					created: now + i,
 					caption: r.caption,
 					seed: r.seed || 0,
 					duration: r.duration || 0,
 					request: r,
-					audio: blobs[i]
+					audio: audios[i],
+					latents: latents[i]
 				} as Song;
 				song.id = await putSong(song);
 				app.songs.unshift(song);
@@ -437,8 +503,26 @@
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
 		} finally {
-			busy = false;
+			busySynth = false;
 		}
+	}
+
+	function clearMetadata() {
+		clearSection(app.request, 'metadata');
+	}
+
+	function clearFlowMatching() {
+		clearSection(app.request, 'flow');
+		app.srcRangeStart = null;
+		app.srcRangeEnd = null;
+	}
+
+	function clearAdvanced() {
+		clearSection(app.request, 'advanced');
+	}
+
+	function clearAdvancedLm() {
+		clearSection(app.request, 'lm');
 	}
 
 	function ph(v: unknown): string {
@@ -449,13 +533,13 @@
 <form class="request-form" onsubmit={(e) => e.preventDefault()}>
 	<input
 		type="file"
-		accept=".json,.mp3,.wav"
+		accept=".json,.mp3,.wav,.vae"
 		bind:this={fileInput}
 		onchange={onFileSelected}
 		hidden
 	/>
 	<div class="toolbar">
-		<button type="button" onclick={importJson} title="Open JSON prompt, MP3 or WAV"
+		<button type="button" onclick={importJson} title="Open JSON prompt, MP3, WAV or VAE latents"
 			><FolderOpen size={14} /> Open</button
 		>
 		<button type="button" onclick={exportJson} title="Save JSON prompt"
@@ -470,7 +554,11 @@
 		<div class="details-body">
 			<div class="model-row">
 				<span class="model-label">LM</span>
-				<select bind:value={app.request.lm_model}>
+				<select
+					class="model-select"
+					bind:value={app.request.lm_model}
+					title="Language Model for Inspire, Format and Compose. Scanned from --models directory at startup."
+				>
 					{#each lmModels as name}
 						<option value={name}>{name}</option>
 					{/each}
@@ -478,7 +566,11 @@
 			</div>
 			<div class="model-row">
 				<span class="model-label">DiT</span>
-				<select bind:value={app.request.synth_model}>
+				<select
+					class="model-select"
+					bind:value={app.request.synth_model}
+					title="Diffusion Transformer for Synthesize. Scanned from --models directory at startup."
+				>
 					{#each ditModels as name}
 						<option value={name}>{name}</option>
 					{/each}
@@ -486,12 +578,16 @@
 			</div>
 			<div class="model-row">
 				<span class="model-label">LoRA</span>
-				<select bind:value={app.request.lora}>
+				<select
+					class="model-select"
+					bind:value={app.request.adapter}
+					title="Adapter merged into DiT at load time. Must match the exact DiT it was trained on. Scanned from --adapters directory. Supports LoRA as a ComfyUI single .safetensors or a PEFT directory with adapter_model.safetensors and adapter_config.json."
+				>
 					<option value="">Disabled</option>
-					{#if loraStale}
-						<option value={app.request.lora} disabled>{app.request.lora}</option>
+					{#if adapterStale}
+						<option value={app.request.adapter} disabled>{app.request.adapter}</option>
 					{/if}
-					{#each loraList as name}
+					{#each adapterList as name}
 						<option value={name}>{name}</option>
 					{/each}
 				</select>
@@ -499,8 +595,21 @@
 					type="text"
 					class="batch-input"
 					placeholder="1.0"
-					bind:value={app.request.lora_scale}
+					bind:value={app.request.adapter_scale}
+					title="Adapter scale factor. Lower if you hear structured noise or artifacts. Raise for stronger effect."
 				/>
+			</div>
+			<div class="model-row">
+				<span class="model-label">VAE</span>
+				<select
+					class="model-select"
+					bind:value={app.request.vae}
+					title="Variational Auto-Encoder for audio <-> latent conversion. Scanned from --models directory at startup."
+				>
+					{#each vaeList as name}
+						<option value={name}>{name}</option>
+					{/each}
+				</select>
 			</div>
 		</div>
 	</details>
@@ -508,20 +617,49 @@
 	<div class="section-title">Name</div>
 	<input type="text" bind:value={app.name} placeholder="Untitled" />
 
-	<div class="section-title">Caption</div>
+	<div class="section-title caption-header">
+		Caption
+		<label
+			class="header-toggle"
+			title="Lock caption: LM keeps your text intact (skips CoT caption refinement)"
+		>
+			<input
+				type="checkbox"
+				checked={!app.request.use_cot_caption}
+				onchange={(e) => (app.request.use_cot_caption = !e.currentTarget.checked)}
+			/> Lock
+		</label>
+	</div>
 	<textarea
 		rows="8"
-		placeholder="Upbeat pop rock with driving guitars... (the only required field, may be enriched by the LM)"
+		placeholder="Upbeat pop rock with driving guitars... (the only required field, enriched by the LM unless all prompt fields are filled.)"
 		bind:value={app.request.caption}
 	></textarea>
 
-	<div class="section-title">Lyrics</div>
+	<div class="section-title lyrics-header">
+		Lyrics
+		<label class="header-toggle" title="Set lyrics to [Instrumental] and language to unknown">
+			<input type="checkbox" checked={instrumental} onchange={toggleInstrumental} /> Instrumental
+		</label>
+	</div>
 	<textarea
 		rows="8"
-		placeholder="Write your own lyrics, type [Instrumental], or leave empty to let the LM create them..."
+		placeholder="Write your own lyrics or leave empty to let the LM create them..."
 		bind:value={app.request.lyrics}
 	></textarea>
 
+	<div class="section-title metadata-header">
+		Metadata
+		<button
+			type="button"
+			class="clear-btn"
+			title="Clear metadata"
+			onclick={clearMetadata}
+			aria-label="Clear metadata"
+		>
+			<X size={20} />
+		</button>
+	</div>
 	<div class="meta-grid">
 		<label
 			>Language <input
@@ -552,16 +690,50 @@
 				bind:value={app.request.timesignature}
 			/></label
 		>
+		<label
+			>LM seed <input
+				type="text"
+				placeholder={ph(d?.lm_seed)}
+				bind:value={app.request.lm_seed}
+			/></label
+		>
 	</div>
 
 	<div class="lm-row">
-		<button type="button" disabled={busy} onclick={dice}>Dice</button>
-		<button type="button" disabled={busy} onclick={inspire}>Inspire</button>
-		<button type="button" disabled={busy} onclick={format}>Format</button>
+		<button
+			type="button"
+			disabled={busy}
+			onclick={dice}
+			title="Pick a random example from ACE-Step sample prompts. Use Inspire next to complete missing fields."
+			>Dice</button
+		>
+		<button
+			type="button"
+			disabled={busy}
+			onclick={inspire}
+			title="Step 1: LM inference to generate metadata and lyrics from your caption. Next: Compose."
+			>Inspire</button
+		>
+		<button
+			type="button"
+			disabled={busy}
+			onclick={format}
+			title="Step 1: LM inference to format existing lyrics for better generation quality. Next: Compose."
+			>Format</button
+		>
 	</div>
 
-	<details>
+	<details class="has-clear">
 		<summary>Advanced LM</summary>
+		<button
+			type="button"
+			class="clear-btn details-clear"
+			title="Clear advanced LM"
+			onclick={clearAdvancedLm}
+			aria-label="Clear advanced LM"
+		>
+			<X size={20} />
+		</button>
 		<div class="details-body">
 			<div class="meta-grid">
 				<label
@@ -605,7 +777,7 @@
 				>Audio codes
 				<textarea
 					rows="4"
-					placeholder="Filled by Compose, or paste for dit-only"
+					placeholder="Filled by Compose. Do not edit unless you know what you are doing."
 					bind:value={app.request.audio_codes}
 				></textarea>
 			</label>
@@ -619,21 +791,47 @@
 			class="batch-input"
 			min="1"
 			max={app.props?.cli?.max_batch || 9}
+			placeholder={ph(d?.lm_batch_size)}
 			bind:value={app.request.lm_batch_size}
+			title="Number of LM variations per Compose. Server must be started with --max-batch N (default 1). Higher values use more VRAM for the KV cache."
 		/>
 		<span class="spacer"></span>
 		<span class="row-label">Pending</span>
 		<div class="pending-nav">
-			<button type="button" class="nav-btn" onclick={() => switchPending(-1)}>&lt;</button>
+			<button
+				type="button"
+				class="nav-btn"
+				onclick={() => switchPending(-1)}
+				title="Previous pending variation">&lt;</button
+			>
 			<span class="nav-label"
 				>{app.pendingRequests.length > 0 ? app.pendingIndex + 1 : 0} / {app.pendingRequests
 					.length}</span
 			>
-			<button type="button" class="nav-btn" onclick={() => switchPending(1)}>&gt;</button>
+			<button
+				type="button"
+				class="nav-btn"
+				onclick={() => switchPending(1)}
+				title="Next pending variation">&gt;</button
+			>
 		</div>
 	</div>
 
-	<button type="button" disabled={busy} onclick={compose}>Compose</button>
+	<div class="action-row">
+		<button
+			type="button"
+			disabled={busy}
+			onclick={compose}
+			title="Step 2: LM inference to generate audio codes that drive the flow matching. Next: Synthesize."
+			>Compose</button
+		>
+		<button
+			type="button"
+			disabled={!busyLm}
+			onclick={cancelPipeline}
+			title="Cancel the active LM job">Cancel</button
+		>
+	</div>
 
 	<details open>
 		<summary>Task</summary>
@@ -641,18 +839,19 @@
 			<div class="model-row">
 				<span class="model-label">Type</span>
 				<select
+					class="model-select"
 					value={taskType}
 					onchange={(e) => {
 						app.request.task_type = e.currentTarget.value;
 					}}
 				>
-					<option value="">text2music</option>
-					<option value={TASK_COVER}>cover</option>
-					<option value={TASK_COVER_NOFSQ}>cover-nofsq</option>
-					<option value={TASK_REPAINT}>repaint</option>
-					<option value={TASK_LEGO}>lego</option>
-					<option value={TASK_EXTRACT}>extract</option>
-					<option value={TASK_COMPLETE}>complete</option>
+					<option value={TASK_TEXT2MUSIC}>Text2Music: from prompt and LM codes</option>
+					<option value={TASK_COVER}>Cover: reinterpret in a new style</option>
+					<option value={TASK_COVER_NOFSQ}>Cover (no FSQ): closer to the original</option>
+					<option value={TASK_REPAINT}>Repaint: regenerate a region</option>
+					<option value={TASK_LEGO}>Lego: add a stem over backing audio</option>
+					<option value={TASK_EXTRACT}>Extract: isolate one stem from a mix</option>
+					<option value={TASK_COMPLETE}>Complete: auto-arrange around a partial track</option>
 				</select>
 			</div>
 			<div class="model-row track-row">
@@ -672,8 +871,17 @@
 		</div>
 	</details>
 
-	<details open>
+	<details open class="has-clear">
 		<summary>Flow matching parameters</summary>
+		<button
+			type="button"
+			class="clear-btn details-clear"
+			title="Clear flow matching parameters"
+			onclick={clearFlowMatching}
+			aria-label="Clear flow matching parameters"
+		>
+			<X size={20} />
+		</button>
 		<div class="details-body">
 			<div class="meta-grid">
 				<label
@@ -698,10 +906,26 @@
 					/></label
 				>
 				<label
-					>Repaint strength <input
+					>Repaint start <input
 						type="text"
-						placeholder={ph(d?.repaint_strength)}
-						bind:value={app.request.repaint_strength}
+						placeholder={ph(d?.repainting_start)}
+						value={app.srcRangeStart != null ? Math.round(app.srcRangeStart * 100) / 100 : ''}
+						oninput={(e) => {
+							const s = e.currentTarget.value.trim();
+							app.srcRangeStart =
+								s === '' ? null : isNaN(Number(s)) ? app.srcRangeStart : Number(s);
+						}}
+					/></label
+				>
+				<label
+					>Repaint end <input
+						type="text"
+						placeholder={ph(d?.repainting_end)}
+						value={app.srcRangeEnd != null ? Math.round(app.srcRangeEnd * 100) / 100 : ''}
+						oninput={(e) => {
+							const s = e.currentTarget.value.trim();
+							app.srcRangeEnd = s === '' ? null : isNaN(Number(s)) ? app.srcRangeEnd : Number(s);
+						}}
 					/></label
 				>
 				<label
@@ -719,18 +943,97 @@
 					/></label
 				>
 				<label
+					>Seed <input type="text" placeholder={ph(d?.seed)} bind:value={app.request.seed} /></label
+				>
+			</div>
+		</div>
+	</details>
+
+	<details class="has-clear">
+		<summary>Advanced and post-processing</summary>
+		<button
+			type="button"
+			class="clear-btn details-clear"
+			title="Clear advanced and post-processing"
+			onclick={clearAdvanced}
+			aria-label="Clear advanced and post-processing"
+		>
+			<X size={20} />
+		</button>
+		<div class="details-body">
+			<label
+				>Custom scheduler <input
+					type="text"
+					placeholder="Descending floats 1 -> 0, comma-separated"
+					bind:value={app.request.custom_timesteps}
+				/></label
+			>
+			<div class="meta-grid">
+				<label
+					>DCW mode <select
+						value={app.request.dcw_mode || d?.dcw_mode || ''}
+						onchange={(e) => {
+							app.request.dcw_mode = e.currentTarget.value;
+						}}
+					>
+						<option value={DCW_MODE_LOW}>Low</option>
+						<option value={DCW_MODE_HIGH}>High</option>
+						<option value={DCW_MODE_DOUBLE}>Double</option>
+						<option value={DCW_MODE_PIX}>Pix</option>
+					</select></label
+				>
+				<label
+					>DCW scaler <input
+						type="text"
+						placeholder={ph(d?.dcw_scaler)}
+						bind:value={app.request.dcw_scaler}
+					/></label
+				>
+				<label
+					>DCW high scaler <input
+						type="text"
+						placeholder={ph(d?.dcw_high_scaler)}
+						bind:value={app.request.dcw_high_scaler}
+					/></label
+				>
+				<label
 					>Method <select
-						value={app.request.infer_method || ''}
+						value={app.request.infer_method || d?.infer_method || ''}
 						onchange={(e) => {
 							app.request.infer_method = e.currentTarget.value;
 						}}
 					>
-						<option value="">ODE Euler</option>
-						<option value="sde">SDE Stochastic</option>
+						<option value={INFER_ODE}>ODE Euler</option>
+						<option value={INFER_SDE}>SDE Stochastic</option>
 					</select></label
 				>
 				<label
-					>Seed <input type="text" placeholder={ph(d?.seed)} bind:value={app.request.seed} /></label
+					>Latent shift <input
+						type="text"
+						placeholder={ph(d?.latent_shift)}
+						bind:value={app.request.latent_shift}
+					/></label
+				>
+				<label
+					>Latent rescale <input
+						type="text"
+						placeholder={ph(d?.latent_rescale)}
+						bind:value={app.request.latent_rescale}
+					/></label
+				>
+				<label
+					>Peak clip <input
+						type="text"
+						placeholder={ph(d?.peak_clip)}
+						bind:value={app.request.peak_clip}
+					/></label
+				>
+				<label
+					>MP3 bitrate <input
+						type="text"
+						placeholder={ph(d?.mp3_bitrate)}
+						bind:value={app.request.mp3_bitrate}
+					/></label
 				>
 			</div>
 		</div>
@@ -743,16 +1046,21 @@
 			class="batch-input"
 			min="1"
 			max="9"
+			placeholder={ph(d?.synth_batch_size)}
 			bind:value={app.request.synth_batch_size}
+			title="Number of DiT variations per request. Each uses a consecutive seed."
 		/>
 		<span class="spacer"></span>
-		<span class="row-label">Format</span>
-		<label class="radio-label">
-			<input type="radio" name="format" value="mp3" bind:group={app.format} /> MP3
-		</label>
-		<label class="radio-label">
-			<input type="radio" name="format" value="wav" bind:group={app.format} /> WAV
-		</label>
+		<span class="model-label">Format</span>
+		<select
+			bind:value={app.format}
+			title="Output audio format. WAV32 outputs raw IEEE float without normalization."
+		>
+			<option value="mp3">MP3</option>
+			<option value="wav16">WAV16</option>
+			<option value="wav24">WAV24</option>
+			<option value="wav32">WAV32</option>
+		</select>
 	</div>
 
 	<div class="model-row cond-row">
@@ -765,7 +1073,21 @@
 		</div>
 	</div>
 
-	<button type="button" disabled={busy} onclick={synthesize}>Synthesize</button>
+	<div class="action-row">
+		<button
+			type="button"
+			disabled={busy}
+			onclick={synthesize}
+			title="Step 3: DiT flow matching + VAE decoding to synthesize audio from codes. No green indicators above (LM codes, Src audio, Timbre ref)? The DiT will hallucinate freely from your prompt: very creative, but unpredictable."
+			>Synthesize</button
+		>
+		<button
+			type="button"
+			disabled={!busySynth}
+			onclick={cancelPipeline}
+			title="Cancel the active synth job">Cancel</button
+		>
+	</div>
 </form>
 
 <style>
@@ -798,8 +1120,51 @@
 		font-weight: 600;
 		padding: 0.4rem 0 0;
 	}
+	.lyrics-header,
+	.caption-header,
+	.metadata-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.header-toggle {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 0.25rem;
+		font-size: 0.8rem;
+		font-weight: 400;
+		color: var(--fg-dim);
+		cursor: pointer;
+	}
+	.header-toggle input[type='checkbox'] {
+		cursor: pointer;
+	}
+	.has-clear {
+		position: relative;
+	}
+	.details-clear {
+		position: absolute;
+		top: 0.4rem;
+		right: 0;
+	}
+	.clear-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		border: none;
+		background: transparent;
+		color: var(--fg-dim);
+		cursor: pointer;
+		line-height: 0;
+	}
+	.clear-btn:hover {
+		color: var(--fg);
+	}
 	textarea,
 	input[type='text'],
+	input[type='number'],
 	select {
 		font-family: inherit;
 		font-size: 0.9rem;
@@ -845,9 +1210,9 @@
 		font-size: 0.85rem;
 		color: var(--fg-dim);
 		flex-shrink: 0;
-		width: 2rem;
+		min-width: 2rem;
 	}
-	.model-row select {
+	.model-select {
 		flex: 1;
 		min-width: 0;
 	}
@@ -857,15 +1222,6 @@
 	.row-label {
 		font-size: 0.85rem;
 		color: var(--fg-dim);
-		flex-shrink: 0;
-	}
-	.radio-label {
-		flex-direction: row;
-		align-items: center;
-		gap: 0.2rem;
-		font-size: 0.85rem;
-		color: var(--fg-dim);
-		cursor: pointer;
 	}
 	.batch-input {
 		padding: 0.2rem 0.3rem;
@@ -885,7 +1241,7 @@
 		gap: 0.4rem;
 	}
 	.nav-btn {
-		padding: 0.15rem 0.4rem !important;
+		padding: 0.4rem 0.4rem !important;
 		font-size: 0.75rem !important;
 		min-width: 0 !important;
 	}
@@ -961,6 +1317,13 @@
 		gap: 0.5rem;
 	}
 	.lm-row button {
+		flex: 1;
+	}
+	.action-row {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.action-row button {
 		flex: 1;
 	}
 </style>
